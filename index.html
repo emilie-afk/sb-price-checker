@@ -100,14 +100,17 @@
     <div class="stat orange"><div class="num" id="s-missing">—</div><div class="lbl">⚠️ Missing from update</div></div>
     <div class="stat orange"><div class="num" id="s-large">—</div><div class="lbl">⚠️ Large change (&gt;30%)</div></div>
     <div class="stat red"><div class="num" id="s-zero">—</div><div class="lbl">🚨 $0 or blank price</div></div>
+    <div class="stat red"><div class="num" id="s-low">—</div><div class="lbl">🔴 Price under $8</div></div>
     <div class="stat blue"><div class="num" id="s-total">—</div><div class="lbl">Total variants</div></div>
   </div>
   <div class="filter-bar" id="filter-bar" style="display:none">
     <button class="filter-tab active" data-filter="all">All</button>
+    <button class="filter-tab" data-filter="update">📋 In update file only</button>
     <button class="filter-tab" data-filter="ok">✅ Clean</button>
     <button class="filter-tab" data-filter="missing">⚠️ Missing</button>
     <button class="filter-tab" data-filter="large">⚠️ Large change</button>
     <button class="filter-tab" data-filter="danger">🚨 Price issue</button>
+    <button class="filter-tab" data-filter="low">🔴 Under $8</button>
   </div>
   <div class="table-wrap" id="table-wrap">
     <div class="placeholder" id="placeholder">
@@ -217,9 +220,10 @@ function runCheck(){
     if(!row.inAfter)flags.push('missing');
     if(!row.inBefore)flags.push('new');
     if(row.priceAfter===0||(row.inAfter&&row.priceAfter==null))flags.push('danger');
+    if(row.inAfter&&row.priceAfter!=null&&row.priceAfter>0&&row.priceAfter<8)flags.push('low');
     if(row.changePct!=null&&Math.abs(row.changePct)>30)flags.push('large');
     row.flags=flags;
-    row.flagPrimary=flags.length===0?'ok':flags.includes('danger')?'danger':flags.includes('missing')?'missing':flags.includes('large')?'large':'ok';
+    row.flagPrimary=flags.length===0?'ok':flags.includes('danger')?'danger':flags.includes('missing')?'missing':flags.includes('low')?'low':flags.includes('large')?'large':'ok';
     allRows.push(row);
   }
   renderSummary();renderTable();
@@ -232,6 +236,7 @@ function renderSummary(){
   document.getElementById('s-missing').textContent=allRows.filter(r=>r.flags.includes('missing')).length;
   document.getElementById('s-large').textContent=allRows.filter(r=>r.flags.includes('large')&&!r.flags.includes('missing')).length;
   document.getElementById('s-zero').textContent=allRows.filter(r=>r.flags.includes('danger')).length;
+  document.getElementById('s-low').textContent=allRows.filter(r=>r.flags.includes('low')).length;
   document.getElementById('s-total').textContent=allRows.length;
   document.getElementById('summary').style.display='';
   document.getElementById('filter-bar').style.display='';
@@ -244,10 +249,12 @@ document.querySelectorAll('.filter-tab').forEach(tab=>tab.addEventListener('clic
 
 function getFilteredRows(){
   if(activeFilter==='all')return allRows;
+  if(activeFilter==='update')return allRows.filter(r=>r.inAfter);
   if(activeFilter==='ok')return allRows.filter(r=>r.flagPrimary==='ok');
   if(activeFilter==='missing')return allRows.filter(r=>r.flags.includes('missing'));
   if(activeFilter==='large')return allRows.filter(r=>r.flags.includes('large'));
   if(activeFilter==='danger')return allRows.filter(r=>r.flags.includes('danger'));
+  if(activeFilter==='low')return allRows.filter(r=>r.flags.includes('low'));
   return allRows;
 }
 
@@ -257,8 +264,8 @@ function renderTable(){
   const tbody=document.getElementById('table-body');
   if(rows.length===0){tbody.innerHTML='<tr><td colspan="9" style="text-align:center;padding:40px;color:#aaa">No rows match this filter.</td></tr>';}
   else{
-    const tagClass={ok:'tag-ok',missing:'tag-missing',danger:'tag-danger',large:'tag-warn'};
-    const tagLabel={ok:'✅ Clean',missing:'⚠️ Missing',danger:'🚨 Price issue',large:'⚠️ Large change'};
+    const tagClass={ok:'tag-ok',missing:'tag-missing',danger:'tag-danger',low:'tag-danger',large:'tag-warn'};
+    const tagLabel={ok:'✅ Clean',missing:'⚠️ Missing',danger:'🚨 Price issue',low:'🔴 Under $8',large:'⚠️ Large change'};
     tbody.innerHTML=rows.map(r=>{
       let cc='change-zero';if(r.changeAmt>0)cc='change-pos';if(r.changeAmt<0)cc='change-neg';
       return`<tr><td><code>${r.sku}</code></td><td>${r.handle}</td><td>${r.size}</td><td>${r.style}</td><td>${fmt(r.priceBefore)}</td><td>${fmt(r.priceAfter)}</td><td class="${cc}">${r.changeAmt!=null?(r.changeAmt>=0?'+':'')+'$'+r.changeAmt.toFixed(2):'—'}</td><td class="${cc}">${fmtPct(r.changePct)}</td><td><span class="tag ${tagClass[r.flagPrimary]}">${tagLabel[r.flagPrimary]}</span></td></tr>`;
