@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow, nosnippet, noarchive" />
+  <meta name="googlebot" content="noindex, nofollow" />
+  <title>Price Update Checker</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; }
+    header { background: #1F4E79; color: white; padding: 18px 32px; display: flex; align-items: center; gap: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+    header h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: -.3px; }
+    header span { font-size: .85rem; opacity: .75; margin-left: 4px; }
+    main { max-width: 1100px; margin: 32px auto; padding: 0 20px; }
+    .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    @media (max-width: 640px) { .upload-grid { grid-template-columns: 1fr; } }
+    .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card h2 { font-size: .85rem; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #1F4E79; margin-bottom: 14px; }
+    .drop-zone { border: 2px dashed #c5d6e8; border-radius: 8px; padding: 28px 16px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; position: relative; }
+    .drop-zone:hover, .drop-zone.dragover { border-color: #1F4E79; background: #f0f6ff; }
+    .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+    .drop-zone .icon { font-size: 2rem; margin-bottom: 8px; }
+    .drop-zone p { font-size: .9rem; color: #555; }
+    .drop-zone .hint { font-size: .78rem; color: #999; margin-top: 4px; }
+    .file-pill { display: flex; align-items: center; gap: 10px; background: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 8px; padding: 10px 14px; margin-top: 12px; font-size: .85rem; color: #2e7d32; font-weight: 600; }
+    .file-pill .remove { margin-left: auto; cursor: pointer; color: #c62828; font-size: 1rem; background: none; border: none; line-height: 1; }
+    .cached-badge { font-size: .72rem; background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; border-radius: 4px; padding: 1px 5px; font-weight: 600; }
+    .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 28px; }
+    .btn { padding: 11px 24px; border-radius: 8px; font-size: .9rem; font-weight: 600; cursor: pointer; border: none; transition: opacity .15s, transform .1s; }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: #1F4E79; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #163a5c; }
+    .btn-secondary { background: white; color: #1F4E79; border: 1.5px solid #1F4E79; }
+    .btn-secondary:hover:not(:disabled) { background: #f0f6ff; }
+    .btn-green { background: #2e7d32; color: white; }
+    .btn-green:hover:not(:disabled) { background: #1b5e20; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .stat { background: white; border-radius: 10px; padding: 16px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.07); border-left: 4px solid #ccc; }
+    .stat.green { border-color: #43a047; } .stat.orange { border-color: #fb8c00; } .stat.red { border-color: #e53935; } .stat.blue { border-color: #1e88e5; }
+    .stat .num { font-size: 2rem; font-weight: 800; } .stat .lbl { font-size: .78rem; color: #666; margin-top: 2px; }
+    .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    .filter-tab { padding: 6px 14px; border-radius: 20px; font-size: .82rem; font-weight: 600; cursor: pointer; border: 1.5px solid #d0d0d0; background: white; color: #555; transition: all .15s; }
+    .filter-tab.active { background: #1F4E79; color: white; border-color: #1F4E79; }
+    .table-wrap { background: white; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    thead th { background: #1F4E79; color: white; padding: 11px 14px; text-align: left; font-size: .78rem; font-weight: 700; letter-spacing: .4px; white-space: nowrap; cursor: pointer; user-select: none; }
+    thead th:hover { background: #163a5c; }
+    tbody tr:nth-child(even) { background: #fafafa; } tbody tr:hover { background: #f0f6ff; }
+    td { padding: 10px 14px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: .75rem; font-weight: 700; }
+    .tag-ok { background: #e8f5e9; color: #2e7d32; } .tag-missing { background: #fff3e0; color: #e65100; }
+    .tag-danger { background: #ffebee; color: #c62828; } .tag-warn { background: #fffde7; color: #f57f17; }
+    .change-pos { color: #c62828; font-weight: 700; } .change-neg { color: #2e7d32; font-weight: 700; } .change-zero { color: #999; }
+    .placeholder { text-align: center; padding: 60px 20px; color: #aaa; }
+    .placeholder .icon { font-size: 3rem; margin-bottom: 12px; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: #333; color: white; padding: 12px 20px; border-radius: 8px; font-size: .88rem; box-shadow: 0 4px 12px rgba(0,0,0,.3); z-index: 1000; transition: opacity .3s; }
+    .toast.hidden { opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+  <h1>Price Update Checker <span>by Succulents Box</span></h1>
+</header>
+<main>
+  <div class="upload-grid">
+    <div class="card">
+      <h2>📤 Before — Shopify Export</h2>
+      <div class="drop-zone" id="zone-before">
+        <input type="file" accept=".csv" id="file-before" multiple />
+        <div class="icon">📂</div>
+        <p>Drop CSV(s) here or click to browse</p>
+        <p class="hint">You can select multiple files</p>
+      </div>
+      <div id="pills-before"></div>
+    </div>
+    <div class="card">
+      <h2>📥 After — Update File</h2>
+      <div class="drop-zone" id="zone-after">
+        <input type="file" accept=".csv" id="file-after" multiple />
+        <div class="icon">📂</div>
+        <p>Drop CSV(s) here or click to browse</p>
+        <p class="hint">You can select multiple files</p>
+      </div>
+      <div id="pills-after"></div>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-run" disabled>▶ Run Check</button>
+    <button class="btn btn-secondary" id="btn-clear">🗑 Clear Saved Files</button>
+    <button class="btn btn-green" id="btn-export" disabled>⬇ Download Excel</button>
+  </div>
+  <div class="summary-grid" id="summary" style="display:none">
+    <div class="stat green"><div class="num" id="s-ok">—</div><div class="lbl">✅ Clean updates</div></div>
+    <div class="stat orange"><div class="num" id="s-missing">—</div><div class="lbl">⚠️ Missing from update</div></div>
+    <div class="stat orange"><div class="num" id="s-large">—</div><div class="lbl">⚠️ Large change (&gt;30%)</div></div>
+    <div class="stat red"><div class="num" id="s-zero">—</div><div class="lbl">🚨 $0 or blank price</div></div>
+    <div class="stat blue"><div class="num" id="s-total">—</div><div class="lbl">Total variants</div></div>
+  </div>
+  <div class="filter-bar" id="filter-bar" style="display:none">
+    <button class="filter-tab active" data-filter="all">All</button>
+    <button class="filter-tab" data-filter="ok">✅ Clean</button>
+    <button class="filter-tab" data-filter="missing">⚠️ Missing</button>
+    <button class="filter-tab" data-filter="large">⚠️ Large change</button>
+    <button class="filter-tab" data-filter="danger">🚨 Price issue</button>
+  </div>
+  <div class="table-wrap" id="table-wrap">
+    <div class="placeholder" id="placeholder">
+      <div class="icon">📊</div>
+      <p>Upload your before and after CSV files, then click <strong>Run Check</strong>.</p>
+    </div>
+    <div class="table-scroll" id="table-scroll" style="display:none">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th data-col="sku">SKU <span class="sa"></span></th>
+            <th data-col="handle">Product <span class="sa"></span></th>
+            <th data-col="size">Size <span class="sa"></span></th>
+            <th data-col="style">Style <span class="sa"></span></th>
+            <th data-col="priceBefore">Price Before <span class="sa"></span></th>
+            <th data-col="priceAfter">Price After <span class="sa"></span></th>
+            <th data-col="changeAmt">Change ($) <span class="sa"></span></th>
+            <th data-col="changePct">Change (%) <span class="sa"></span></th>
+            <th data-col="flagPrimary">Status <span class="sa"></span></th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<div class="toast hidden" id="toast"></div>
+<script>
+const DB_NAME='PriceCheckerDB',DB_VER=1,STORE='files';
+function openDB(){return new Promise((r,j)=>{const q=indexedDB.open(DB_NAME,DB_VER);q.onupgradeneeded=e=>e.target.result.createObjectStore(STORE);q.onsuccess=e=>r(e.target.result);q.onerror=e=>j(e.target.error);});}
+async function dbSet(k,v){const db=await openDB();return new Promise((r,j)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(v,k);tx.oncomplete=r;tx.onerror=e=>j(e.target.error);});}
+async function dbGet(k){const db=await openDB();return new Promise((r,j)=>{const tx=db.transaction(STORE,'readonly');const q=tx.objectStore(STORE).get(k);q.onsuccess=e=>r(e.target.result);q.onerror=e=>j(e.target.error);});}
+async function dbDel(...keys){const db=await openDB();return new Promise((r,j)=>{const tx=db.transaction(STORE,'readwrite');keys.forEach(k=>tx.objectStore(STORE).delete(k));tx.oncomplete=r;tx.onerror=e=>j(e.target.error);});}
+
+let filesBefore=[],filesAfter=[],allRows=[],sortCol=null,sortDir=1,activeFilter='all';
+
+function toast(msg,d=3000){const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('hidden');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.add('hidden'),d);}
+
+function renderPills(slot,files,cached=false){
+  const el=document.getElementById('pills-'+slot);
+  el.innerHTML=files.map((f,i)=>`<div class="file-pill">📄 ${f.name}${cached?'<span class="cached-badge">cached</span>':''}<button class="remove" data-slot="${slot}" data-i="${i}">✕</button></div>`).join('');
+  el.querySelectorAll('.remove').forEach(btn=>btn.addEventListener('click',()=>{
+    const s=btn.dataset.slot,idx=+btn.dataset.i;
+    if(s==='before'){filesBefore.splice(idx,1);renderPills('before',filesBefore);}
+    else{filesAfter.splice(idx,1);renderPills('after',filesAfter);}
+    saveToCache();updateRunBtn();
+  }));
+}
+
+function readFileAsText(file){return new Promise((r,j)=>{const fr=new FileReader();fr.onload=e=>r(e.target.result);fr.onerror=j;fr.readAsText(file);});}
+
+async function handleFiles(slot,fileList){
+  const arr=slot==='before'?filesBefore:filesAfter;
+  for(const file of fileList){const csv=await readFileAsText(file);arr.push({name:file.name,csv});}
+  renderPills(slot,arr);saveToCache();updateRunBtn();
+}
+
+async function saveToCache(){await dbSet('before',filesBefore);await dbSet('after',filesAfter);}
+
+async function loadFromCache(){
+  const b=await dbGet('before'),a=await dbGet('after');
+  if(b&&b.length){filesBefore=b;renderPills('before',filesBefore,true);}
+  if(a&&a.length){filesAfter=a;renderPills('after',filesAfter,true);}
+  updateRunBtn();
+  if(b?.length||a?.length)toast('📂 Loaded your previous files from cache');
+}
+
+async function clearCache(){
+  filesBefore=[];filesAfter=[];
+  renderPills('before',[]);renderPills('after',[]);
+  await dbDel('before','after');updateRunBtn();toast('🗑 Cache cleared');
+}
+
+['before','after'].forEach(slot=>{
+  const zone=document.getElementById('zone-'+slot),input=document.getElementById('file-'+slot);
+  input.addEventListener('change',()=>handleFiles(slot,input.files));
+  zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragover');});
+  zone.addEventListener('dragleave',()=>zone.classList.remove('dragover'));
+  zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragover');handleFiles(slot,e.dataTransfer.files);});
+});
+
+function updateRunBtn(){document.getElementById('btn-run').disabled=!(filesBefore.length&&filesAfter.length);}
+document.getElementById('btn-run').addEventListener('click',runCheck);
+document.getElementById('btn-clear').addEventListener('click',clearCache);
+document.getElementById('btn-export').addEventListener('click',exportExcel);
+
+function parseCSVs(files){const rows=[];for(const f of files){const r=Papa.parse(f.csv,{header:true,skipEmptyLines:true});rows.push(...r.data);}return rows;}
+function toNum(v){const n=parseFloat(String(v||'').replace(/[^0-9.-]/g,''));return isNaN(n)?null:n;}
+function fmt(v){return v!=null?'$'+v.toFixed(2):'—';}
+function fmtPct(v){return v!=null?(v>0?'+':'')+v.toFixed(1)+'%':'—';}
+
+function runCheck(){
+  const beforeRaw=parseCSVs(filesBefore),afterRaw=parseCSVs(filesAfter);
+  const bMap={};
+  for(const row of beforeRaw){const sku=(row['Variant SKU']||'').trim();if(!sku)continue;bMap[sku]={sku,handle:row['Handle']||'',size:row['Option1 Value']||'',style:row['Option2 Value']||'',priceBefore:toNum(row['Variant Price']),compareAtBefore:toNum(row['Variant Compare At Price'])};}
+  const aMap={};
+  for(const row of afterRaw){const sku=(row['Variant SKU']||'').trim();if(!sku)continue;aMap[sku]={priceAfter:toNum(row['Variant Price']),compareAtAfter:toNum(row['Variant Compare At Price'])};}
+  const allSkus=new Set([...Object.keys(bMap),...Object.keys(aMap)]);
+  allRows=[];
+  for(const sku of allSkus){
+    const b=bMap[sku],a=aMap[sku];
+    const row={sku,handle:b?.handle||'',size:b?.size||'',style:b?.style||'',priceBefore:b?.priceBefore??null,priceAfter:a?.priceAfter??null,compareAtBefore:b?.compareAtBefore??null,compareAtAfter:a?.compareAtAfter??null,inBefore:!!b,inAfter:!!a};
+    const change=(row.priceBefore!=null&&row.priceAfter!=null)?row.priceAfter-row.priceBefore:null;
+    row.changeAmt=change;
+    row.changePct=(change!=null&&row.priceBefore)?(change/row.priceBefore)*100:null;
+    const flags=[];
+    if(!row.inAfter)flags.push('missing');
+    if(!row.inBefore)flags.push('new');
+    if(row.priceAfter===0||(row.inAfter&&row.priceAfter==null))flags.push('danger');
+    if(row.changePct!=null&&Math.abs(row.changePct)>30)flags.push('large');
+    row.flags=flags;
+    row.flagPrimary=flags.length===0?'ok':flags.includes('danger')?'danger':flags.includes('missing')?'missing':flags.includes('large')?'large':'ok';
+    allRows.push(row);
+  }
+  renderSummary();renderTable();
+  document.getElementById('btn-export').disabled=false;
+  toast('✅ Check complete!');
+}
+
+function renderSummary(){
+  document.getElementById('s-ok').textContent=allRows.filter(r=>r.flagPrimary==='ok').length;
+  document.getElementById('s-missing').textContent=allRows.filter(r=>r.flags.includes('missing')).length;
+  document.getElementById('s-large').textContent=allRows.filter(r=>r.flags.includes('large')&&!r.flags.includes('missing')).length;
+  document.getElementById('s-zero').textContent=allRows.filter(r=>r.flags.includes('danger')).length;
+  document.getElementById('s-total').textContent=allRows.length;
+  document.getElementById('summary').style.display='';
+  document.getElementById('filter-bar').style.display='';
+}
+
+document.querySelectorAll('.filter-tab').forEach(tab=>tab.addEventListener('click',()=>{
+  document.querySelectorAll('.filter-tab').forEach(t=>t.classList.remove('active'));
+  tab.classList.add('active');activeFilter=tab.dataset.filter;renderTable();
+}));
+
+function getFilteredRows(){
+  if(activeFilter==='all')return allRows;
+  if(activeFilter==='ok')return allRows.filter(r=>r.flagPrimary==='ok');
+  if(activeFilter==='missing')return allRows.filter(r=>r.flags.includes('missing'));
+  if(activeFilter==='large')return allRows.filter(r=>r.flags.includes('large'));
+  if(activeFilter==='danger')return allRows.filter(r=>r.flags.includes('danger'));
+  return allRows;
+}
+
+function renderTable(){
+  let rows=getFilteredRows();
+  if(sortCol){rows=[...rows].sort((a,b)=>{let va=a[sortCol],vb=b[sortCol];if(va==null)va=sortDir>0?Infinity:-Infinity;if(vb==null)vb=sortDir>0?Infinity:-Infinity;if(typeof va==='string')return va.localeCompare(vb)*sortDir;return(va-vb)*sortDir;});}
+  const tbody=document.getElementById('table-body');
+  if(rows.length===0){tbody.innerHTML='<tr><td colspan="9" style="text-align:center;padding:40px;color:#aaa">No rows match this filter.</td></tr>';}
+  else{
+    const tagClass={ok:'tag-ok',missing:'tag-missing',danger:'tag-danger',large:'tag-warn'};
+    const tagLabel={ok:'✅ Clean',missing:'⚠️ Missing',danger:'🚨 Price issue',large:'⚠️ Large change'};
+    tbody.innerHTML=rows.map(r=>{
+      let cc='change-zero';if(r.changeAmt>0)cc='change-pos';if(r.changeAmt<0)cc='change-neg';
+      return`<tr><td><code>${r.sku}</code></td><td>${r.handle}</td><td>${r.size}</td><td>${r.style}</td><td>${fmt(r.priceBefore)}</td><td>${fmt(r.priceAfter)}</td><td class="${cc}">${r.changeAmt!=null?(r.changeAmt>=0?'+':'')+'$'+r.changeAmt.toFixed(2):'—'}</td><td class="${cc}">${fmtPct(r.changePct)}</td><td><span class="tag ${tagClass[r.flagPrimary]}">${tagLabel[r.flagPrimary]}</span></td></tr>`;
+    }).join('');
+  }
+  document.getElementById('placeholder').style.display='none';
+  document.getElementById('table-scroll').style.display='';
+}
+
+document.querySelectorAll('thead th[data-col]').forEach(th=>th.addEventListener('click',()=>{
+  const col=th.dataset.col;
+  if(sortCol===col){sortDir*=-1;}else{sortCol=col;sortDir=1;}
+  document.querySelectorAll('thead th .sa').forEach(s=>s.textContent='');
+  th.querySelector('.sa').textContent=sortDir===1?' ▲':' ▼';
+  renderTable();
+}));
+
+function exportExcel(){
+  const headers=['SKU','Product','Size','Style','Price Before','Price After','Change ($)','Change (%)','Status'];
+  const data=allRows.map(r=>[r.sku,r.handle,r.size,r.style,r.priceBefore,r.priceAfter,r.changeAmt,r.changePct!=null?r.changePct/100:null,{ok:'Clean',missing:'Missing from update',danger:'Price issue',large:'Large change'}[r.flagPrimary]]);
+  const ws=XLSX.utils.aoa_to_sheet([headers,...data]);
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  for(let R=1;R<=range.e.r;R++){for(const C of[4,5,6]){const addr=XLSX.utils.encode_cell({r:R,c:C});if(ws[addr]&&ws[addr].v!=null)ws[addr].z='"$"#,##0.00';}const pa=XLSX.utils.encode_cell({r:R,c:7});if(ws[pa]&&ws[pa].v!=null)ws[pa].z='+0.0%;-0.0%';}
+  ws['!cols']=[18,30,10,18,13,13,11,11,20].map(w=>({wch:w}));
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Price Check');
+  const issues=allRows.filter(r=>r.flagPrimary!=='ok');
+  if(issues.length){const iData=issues.map(r=>[r.sku,r.handle,r.size,r.style,r.priceBefore,r.priceAfter,r.changeAmt,r.changePct!=null?r.changePct/100:null,{missing:'Missing from update',danger:'Price issue',large:'Large change'}[r.flagPrimary]]);const ws2=XLSX.utils.aoa_to_sheet([headers,...iData]);ws2['!cols']=ws['!cols'];XLSX.utils.book_append_sheet(wb,ws2,'Issues Only');}
+  XLSX.writeFile(wb,'price-check-'+new Date().toISOString().slice(0,10)+'.xlsx');
+  toast('⬇ Excel downloaded!');
+}
+
+loadFromCache();
+</script>
+</body>
+</html>
