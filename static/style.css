@@ -1,0 +1,26 @@
+/* Succulents Box Price Checker — supplemental styles */
+
+/* Smooth transitions */
+body { transition: background-color 0.2s; }
+
+/* Italic genus names */
+.genus-name { font-style: italic; }
+
+/* Line clamp utility */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Spinner animation (Tailwind's animate-spin handles it) */
+
+/* Table row transitions */
+tr { transition: opacity 0.3s ease; }
+
+/* Focus ring consistency */
+button:focus-visible {
+  outline: 2px solid #2d6a4f;
+  outline-offset: 2px;
+}

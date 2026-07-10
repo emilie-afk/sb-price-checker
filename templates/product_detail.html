@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}{{ product['title'] }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <a href="{{ url_for('main.products') }}" class="text-brand-600 hover:underline text-sm">← Back to Products</a>
+  <h1 class="text-2xl font-bold text-gray-900 mt-2">{{ product['title'] }}</h1>
+  <div class="flex flex-wrap gap-3 mt-2 text-sm text-gray-500">
+    {% if product['product_type'] %}
+    <span class="italic text-gray-400">{{ product['product_type'] }}</span>
+    <span>·</span>
+    {% endif %}
+    <span>{{ matches|length }} competitor match{{ 'es' if matches|length != 1 }}</span>
+  </div>
+
+  <!-- SB price table -->
+  {% if sb_variants %}
+  <div class="mt-4 inline-flex flex-wrap gap-3">
+    <span class="text-xs text-gray-500 self-center font-semibold uppercase tracking-wide">Your Prices:</span>
+    {% for v in sb_variants %}
+    {% if v['price'] > 0 %}
+    <span class="bg-brand-50 border border-brand-200 rounded-lg px-3 py-1.5 text-sm">
+      <span class="text-gray-500">{{ v['variant_title'] }}</span>
+      <span class="font-bold text-brand-700 ml-1">${{ "%.2f"|format(v['price']) }}</span>
+      {% if not v['available'] %}<span class="text-xs text-gray-400 ml-1">(out of stock)</span>{% endif %}
+    </span>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if matches %}
+<div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for m in matches %}
+  {# m: 0=id, 1=relationship, 2=confidence, 3=status, 4=ai_explanation,
+        5=price_diff_pct, 6=market_position, 7=created_at,
+        8=comp_title, 9=source, 10=url, 11=image_url,
+        12=variant_title, 13=comp_price, 14=available #}
+  <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col gap-3" id="card-{{ m[0] }}">
+    <!-- Source badge + status -->
+    <div class="flex items-center justify-between">
+      <span class="text-xs font-semibold px-2 py-1 rounded bg-brand-100 text-brand-700">
+        {% if m[9] == 'planet_desert' %}Planet Desert
+        {% elif m[9] == 'mountain_crest' %}Mountain Crest
+        {% elif m[9] == 'house_plant_shop' %}House Plant Shop
+        {% else %}{{ m[9] }}{% endif %}
+      </span>
+      <span id="status-{{ m[0] }}" class="text-xs font-semibold px-2 py-1 rounded
+        {% if m[3] == 'accepted' %}bg-green-100 text-green-700
+        {% elif m[3] == 'rejected' %}bg-red-100 text-red-700
+        {% else %}bg-yellow-100 text-yellow-700{% endif %}">
+        {{ m[3]|capitalize }}
+      </span>
+    </div>
+
+    <!-- Product title -->
+    <div>
+      {% if m[10] %}
+      <a href="{{ m[10] }}" target="_blank" class="font-semibold text-gray-900 hover:text-brand-700 hover:underline leading-tight block">
+        {{ m[8] }}
+      </a>
+      {% else %}
+      <p class="font-semibold text-gray-900 leading-tight">{{ m[8] }}</p>
+      {% endif %}
+      <p class="text-xs text-gray-400 mt-0.5">{{ m[12] }}</p>
+    </div>
+
+    <!-- Competitor price + diff vs SB -->
+    <div class="flex items-end gap-3">
+      <div>
+        <p class="text-xs text-gray-400 mb-0.5">Competitor price</p>
+        <p class="text-3xl font-bold text-gray-800">${{ "%.2f"|format(m[13]) }}</p>
+      </div>
+      {% if m[5] is not none %}
+      <div class="mb-1">
+        <span class="text-sm font-bold px-2 py-1 rounded-lg
+          {% if m[5] > 5 %}bg-green-100 text-green-700
+          {% elif m[5] < -5 %}bg-red-100 text-red-700
+          {% else %}bg-yellow-100 text-yellow-700{% endif %}">
+          {% if m[5] > 0 %}+{% endif %}{{ "%.1f"|format(m[5]) }}% vs SB
+        </span>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Badges -->
+    <div class="flex flex-wrap gap-2">
+      {% set conf = m[2] %}
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium
+        {% if conf >= 90 %}bg-green-100 text-green-700
+        {% elif conf >= 75 %}bg-yellow-100 text-yellow-700
+        {% else %}bg-red-100 text-red-600{% endif %}">
+        {{ conf }}% confidence
+      </span>
+      <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+        {{ m[1]|replace('_', ' ')|title }}
+      </span>
+      {% set pos = m[6] %}
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium
+        {% if pos == 'above_market' %}bg-green-100 text-green-700
+        {% elif pos == 'near_market' %}bg-yellow-100 text-yellow-700
+        {% elif pos == 'below_market' %}bg-red-100 text-red-600
+        {% else %}bg-gray-100 text-gray-500{% endif %}">
+        {% if pos == 'above_market' %}SB Cheaper
+        {% elif pos == 'below_market' %}SB Pricier
+        {% elif pos == 'near_market' %}Near Market
+        {% else %}Unknown{% endif %}
+      </span>
+    </div>
+
+    <!-- AI reasoning -->
+    {% if m[4] %}
+    <p class="text-xs text-gray-500 italic border-t pt-2">{{ m[4] }}</p>
+    {% endif %}
+
+    <!-- Actions -->
+    {% if m[3] == 'pending' %}
+    <div class="flex gap-2 mt-auto pt-2" id="actions-{{ m[0] }}">
+      <button onclick="reviewMatch({{ m[0] }}, 'accept')"
+        class="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 rounded-lg transition-colors">
+        Accept
+      </button>
+      <button onclick="reviewMatch({{ m[0] }}, 'reject')"
+        class="flex-1 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-2 rounded-lg transition-colors">
+        Reject
+      </button>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 p-12 text-center">
+  <p class="text-gray-400 text-lg">No matches yet for <em>{{ product['title'] }}</em>.</p>
+  <p class="text-gray-400 text-sm mt-2">Run "Collect Competitor Data" then "Run AI Matching" from the dashboard.</p>
+  <a href="{{ url_for('main.dashboard') }}" class="mt-4 inline-block text-brand-600 hover:underline text-sm">Go to Dashboard →</a>
+</div>
+{% endif %}
+
+<script>
+async function reviewMatch(id, action) {
+  const endpoint = `/matches/${id}/${action}`;
+  try {
+    const resp = await fetch(endpoint, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      const statusEl = document.getElementById('status-' + id);
+      const actionsEl = document.getElementById('actions-' + id);
+      if (statusEl) {
+        statusEl.textContent = action === 'accept' ? 'Accepted' : 'Rejected';
+        statusEl.className = 'text-xs font-semibold px-2 py-1 rounded ' +
+          (action === 'accept' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700');
+      }
+      if (actionsEl) actionsEl.remove();
+    }
+  } catch (e) {
+    alert('Failed to update match: ' + e.message);
+  }
+}
+</script>
+{% endblock %}
