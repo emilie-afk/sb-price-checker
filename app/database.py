@@ -1,23 +1,23 @@
 import os
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import namedtuple_row
 from flask import g, current_app
 
 
 class _DbWrapper:
-    """Makes a psycopg2 connection look like sqlite3 in our codebase.
-    All cursors use NamedTupleCursor so rows support both row[0] and row.column_name."""
+    """Makes a psycopg connection look like sqlite3 in our codebase.
+    All cursors use namedtuple_row so rows support both row[0] and row.column_name."""
 
     def __init__(self, conn):
         self._conn = conn
 
     def execute(self, sql, params=None):
-        cur = self._conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor)
+        cur = self._conn.cursor(row_factory=namedtuple_row)
         cur.execute(sql, params or ())
         return cur
 
     def cursor(self):
-        return self._conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor)
+        return self._conn.cursor(row_factory=namedtuple_row)
 
     def commit(self):
         self._conn.commit()
@@ -28,7 +28,7 @@ class _DbWrapper:
 
 def _connect():
     dsn = current_app.config['DATABASE_URL']
-    conn = psycopg2.connect(dsn)
+    conn = psycopg.connect(dsn)
     return _DbWrapper(conn)
 
 
