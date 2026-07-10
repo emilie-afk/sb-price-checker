@@ -64,33 +64,53 @@ def fetch_mcg_bigcommerce():
     try:
         from curl_cffi import requests as cf_requests
         from bs4 import BeautifulSoup
-    except ImportError:
-        return []
+    except ImportError as e:
+        raise RuntimeError(f'curl-cffi/beautifulsoup4 not installed: {e}')
 
     MCG_BASE = 'https://mountaincrestgardens.com'
     raw_products = []
     page = 1
+    last_error = None
 
     while True:
         url = f'{MCG_BASE}/explore-all/?page={page}'
         try:
             resp = cf_requests.get(
                 url,
-                impersonate='chrome120',
-                timeout=30,
-                headers={'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
+                impersonate='chrome124',
+                timeout=45,
+                headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
             )
+
+            if resp.status_code == 403:
+                raise RuntimeError(f'MCG blocked by Cloudflare (403) on page {page}. curl-cffi impersonation failed.')
             if resp.status_code != 200:
-                break
+                raise RuntimeError(f'MCG returned HTTP {resp.status_code} on page {page}')
 
             soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # Detect Cloudflare challenge page
+            if 'challenge' in resp.text.lower() and len(resp.text) < 5000:
+                raise RuntimeError('MCG returned Cloudflare challenge page — bot detection triggered')
 
             # BigCommerce Stencil: products are article.card inside .productGrid
             cards = soup.select('article.card')
             if not cards:
-                cards = soup.select('.product-item') or soup.select('.productGrid .product')
+                cards = soup.select('[data-product-id]')
             if not cards:
-                break
+                cards = soup.select('.productGrid li') or soup.select('.product-item')
+            if not cards:
+                # Log what we actually got for debugging
+                title_tag = soup.find('title')
+                page_title = title_tag.get_text() if title_tag else 'unknown'
+                raise RuntimeError(f'No product cards found on MCG page {page}. Page title: "{page_title}". HTML snippet: {resp.text[:500]}')
 
             found_any = False
             for card in cards:
@@ -154,8 +174,10 @@ def fetch_mcg_bigcommerce():
             page += 1
             time.sleep(1.5)
 
-        except Exception:
-            break
+        except RuntimeError:
+            raise  # Surface these as real errors
+        except Exception as e:
+            raise RuntimeError(f'MCG scraping failed on page {page}: {e}')
 
     return raw_products
 
