@@ -1,14 +1,43 @@
 import csv
 import io
 import os
+import threading
+import uuid
 from datetime import datetime
 from flask import (Blueprint, render_template, jsonify, current_app,
                    redirect, url_for, make_response, request, session)
-from .database import get_db, execute_db
+from .database import get_db, execute_db, _connect
 from .scraper import run_collection, sync_sb_products
 from .matcher import run_matching
 
 bp = Blueprint('main', __name__)
+
+# In-memory task tracker for background jobs
+_tasks: dict = {}
+
+
+def _run_in_background(task_id: str, fn, *args):
+    """Run fn(*args) in a background thread, storing result in _tasks."""
+    app = current_app._get_current_object()
+
+    def worker():
+        with app.app_context():
+            try:
+                db = _connect()
+                result = fn(db, *args)
+                db.commit()
+                db.close()
+                _tasks[task_id] = {'status': 'done', 'result': result}
+            except Exception as e:
+                _tasks[task_id] = {'status': 'error', 'error': str(e)}
+
+    _tasks[task_id] = {'status': 'running'}
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@bp.route('/task-status/<task_id>')
+def task_status(task_id):
+    return jsonify(_tasks.get(task_id, {'status': 'unknown'}))
 
 
 @bp.route('/robots.txt')
@@ -196,29 +225,20 @@ def export_csv():
 
 @bp.route('/sync-sb', methods=['POST'])
 def sync_sb():
-    try:
-        db = get_db()
-        result = sync_sb_products(db)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    task_id = uuid.uuid4().hex[:8]
+    _run_in_background(task_id, sync_sb_products)
+    return jsonify({'success': True, 'task_id': task_id})
 
 
 @bp.route('/collect', methods=['POST'])
 def collect():
-    try:
-        db = get_db()
-        results = run_collection(db)
-        return jsonify({'success': True, 'results': results})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    task_id = uuid.uuid4().hex[:8]
+    _run_in_background(task_id, run_collection)
+    return jsonify({'success': True, 'task_id': task_id})
 
 
 @bp.route('/match', methods=['POST'])
 def run_match():
-    try:
-        db = get_db()
-        summary = run_matching(db)
-        return jsonify({'success': True, 'summary': summary})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    task_id = uuid.uuid4().hex[:8]
+    _run_in_background(task_id, run_matching)
+    return jsonify({'success': True, 'task_id': task_id})
