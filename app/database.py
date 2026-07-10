@@ -1,24 +1,57 @@
 import os
-import psycopg
-from psycopg.rows import namedtuple_row
+import pg8000.dbapi as pg
+from collections import namedtuple
 from urllib.parse import urlparse, unquote
 from flask import g, current_app
 
 
-class _DbWrapper:
-    """Makes a psycopg connection look like sqlite3 in our codebase.
-    All cursors use namedtuple_row so rows support both row[0] and row.column_name."""
+class _WrappedCursor:
+    """Wraps a pg8000 cursor so rows support both row[0] index AND row.column_name attribute access."""
 
+    def __init__(self, cur):
+        self._cur = cur
+
+    def _make_row(self, row):
+        if row is None or self._cur.description is None:
+            return row
+        fields = [d[0] for d in self._cur.description]
+        Row = namedtuple('Row', fields, rename=True)
+        return Row(*row)
+
+    def execute(self, sql, params=None):
+        self._cur.execute(sql, params or ())
+        return self  # allow chaining: cursor.execute(...).fetchone()
+
+    def fetchone(self):
+        return self._make_row(self._cur.fetchone())
+
+    def fetchall(self):
+        if self._cur.description is None:
+            return self._cur.fetchall() or []
+        fields = [d[0] for d in self._cur.description]
+        Row = namedtuple('Row', fields, rename=True)
+        return [Row(*row) for row in (self._cur.fetchall() or [])]
+
+    def __iter__(self):
+        if self._cur.description is None:
+            return
+        fields = [d[0] for d in self._cur.description]
+        Row = namedtuple('Row', fields, rename=True)
+        for row in self._cur:
+            yield Row(*row)
+
+
+class _DbWrapper:
     def __init__(self, conn):
         self._conn = conn
 
     def execute(self, sql, params=None):
-        cur = self._conn.cursor(row_factory=namedtuple_row)
+        cur = _WrappedCursor(self._conn.cursor())
         cur.execute(sql, params or ())
         return cur
 
     def cursor(self):
-        return self._conn.cursor(row_factory=namedtuple_row)
+        return _WrappedCursor(self._conn.cursor())
 
     def commit(self):
         self._conn.commit()
@@ -29,14 +62,14 @@ class _DbWrapper:
 
 def _connect():
     dsn = current_app.config['DATABASE_URL']
-    # Parse URL manually so special characters in the password are handled correctly
     p = urlparse(dsn)
-    conn = psycopg.connect(
+    conn = pg.connect(
         host=p.hostname,
         port=p.port or 5432,
-        dbname=p.path.lstrip('/'),
+        database=p.path.lstrip('/'),
         user=unquote(p.username or ''),
         password=unquote(p.password or ''),
+        ssl_context=True,  # required for Supabase
     )
     return _DbWrapper(conn)
 
