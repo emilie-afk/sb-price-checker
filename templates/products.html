@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Products{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-center justify-between">
+  <div>
+    <h1 class="text-3xl font-bold text-gray-900">Your Plants</h1>
+    <p class="text-gray-500 mt-1">{{ products|length }} products — click column headers to sort</p>
+  </div>
+  <input id="searchBox" type="text" placeholder="Search plants…"
+    class="border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-56">
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+  <table class="w-full text-sm min-w-[800px]" id="productsTable">
+    <thead class="bg-gray-50 border-b border-gray-200">
+      <tr>
+        <th class="text-left px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+            onclick="sortTable(0, 'str')" data-dir="asc">
+          Product <span class="sort-icon text-gray-400">↕</span>
+        </th>
+        <th class="text-left px-4 py-3 font-semibold text-gray-600 hidden md:table-cell cursor-pointer hover:bg-gray-100 select-none"
+            onclick="sortTable(1, 'str')" data-dir="asc">
+          Type <span class="sort-icon text-gray-400">↕</span>
+        </th>
+        <th class="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+            onclick="sortTable(2, 'num')" data-dir="asc">
+          SB Price <span class="sort-icon text-gray-400">↕</span>
+        </th>
+        <th class="text-right px-4 py-3 font-semibold text-gray-600 hidden sm:table-cell cursor-pointer hover:bg-gray-100 select-none"
+            onclick="sortTable(3, 'num')" data-dir="asc">
+          Matches <span class="sort-icon text-gray-400">↕</span>
+        </th>
+        <th class="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+            onclick="sortTable(4, 'num')" data-dir="asc">
+          Avg Diff vs SB <span class="sort-icon text-gray-400">↕</span>
+        </th>
+        <th class="text-center px-4 py-3 font-semibold text-gray-600">Position</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody">
+      {% for row in products %}
+      {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=pending, 7=position, 8=avg_diff #}
+      <tr class="border-b border-gray-100 hover:bg-gray-50 transition-colors product-row"
+          data-name="{{ row[1]|lower }}">
+        <td class="px-4 py-3" data-val="{{ row[1] }}">
+          <a href="{{ url_for('main.product_detail', product_id=row[0]) }}"
+             class="font-medium text-brand-700 hover:text-brand-900 hover:underline">
+            {{ row[1] }}
+          </a>
+        </td>
+        <td class="px-4 py-3 text-gray-500 hidden md:table-cell" data-val="{{ row[2] or '' }}">
+          {{ row[2] or '—' }}
+        </td>
+        <td class="px-4 py-3 text-right font-mono text-gray-700" data-val="{{ row[3] or 0 }}">
+          {% if row[3] and row[4] and row[3] != row[4] %}
+            ${{ "%.2f"|format(row[3]) }}–${{ "%.2f"|format(row[4]) }}
+          {% elif row[3] %}
+            ${{ "%.2f"|format(row[3]) }}
+          {% else %}—{% endif %}
+        </td>
+        <td class="px-4 py-3 text-right hidden sm:table-cell" data-val="{{ row[5] or 0 }}">
+          {% if row[5] %}
+            <span class="text-green-700 font-medium">{{ row[5] }}</span>
+            {% if row[6] %}<span class="text-yellow-600 text-xs"> (+{{ row[6] }} pending)</span>{% endif %}
+          {% else %}
+            <span class="text-gray-400">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-right font-mono" data-val="{{ row[8] if row[8] is not none else '' }}">
+          {% if row[8] is not none %}
+            <span class="font-semibold
+              {% if row[8] > 5 %}text-green-600{% elif row[8] < -5 %}text-red-600{% else %}text-yellow-600{% endif %}">
+              {% if row[8] > 0 %}+{% endif %}{{ "%.1f"|format(row[8]) }}%
+            </span>
+            <span class="text-xs text-gray-400 block">competitors vs SB</span>
+          {% else %}
+            <span class="text-gray-400">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-center">
+          {% set pos = row[7] %}
+          {% if pos == 'above_market' %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">SB Cheaper</span>
+          {% elif pos == 'near_market' %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">Near Market</span>
+          {% elif pos == 'below_market' %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">SB Pricier</span>
+          {% else %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-500">No Data</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not products %}
+  <div class="py-12 text-center text-gray-400">
+    No products yet. Go to Dashboard and click "Sync My Products" first.
+  </div>
+  {% endif %}
+</div>
+
+<script>
+document.getElementById('searchBox').addEventListener('input', function() {
+  const q = this.value.toLowerCase().trim();
+  document.querySelectorAll('.product-row').forEach(row => {
+    const name = row.getAttribute('data-name') || '';
+    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+});
+
+function sortTable(colIndex, type) {
+  const tbody = document.getElementById('tableBody');
+  const rows = Array.from(tbody.querySelectorAll('tr.product-row'));
+  const th = document.querySelectorAll('thead th')[colIndex];
+  const dir = th.dataset.dir === 'asc' ? 1 : -1;
+
+  document.querySelectorAll('thead th').forEach(t => {
+    t.dataset.dir = 'asc';
+    const icon = t.querySelector('.sort-icon');
+    if (icon) icon.textContent = '↕';
+  });
+  th.dataset.dir = dir === 1 ? 'desc' : 'asc';
+  th.querySelector('.sort-icon').textContent = dir === 1 ? '↓' : '↑';
+
+  rows.sort((a, b) => {
+    const aCell = a.querySelectorAll('td')[colIndex];
+    const bCell = b.querySelectorAll('td')[colIndex];
+    const aVal = aCell ? (aCell.dataset.val || '') : '';
+    const bVal = bCell ? (bCell.dataset.val || '') : '';
+
+    if (type === 'num') {
+      const aNum = aVal === '' ? -Infinity : parseFloat(aVal);
+      const bNum = bVal === '' ? -Infinity : parseFloat(bVal);
+      return (aNum - bNum) * dir;
+    }
+    return aVal.localeCompare(bVal) * dir;
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
+}
+</script>
+{% endblock %}
