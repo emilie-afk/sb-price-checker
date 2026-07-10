@@ -1,0 +1,302 @@
+[
+  {
+    "genus": "Chlorophytum",
+    "title": "Spider Plant",
+    "net_items_sold": 267,
+    "net_sales": 7066.32
+  },
+  {
+    "genus": "Senecio",
+    "title": "String Of Pearls Senecio Rowleyanus",
+    "net_items_sold": 587,
+    "net_sales": 6534.66
+  },
+  {
+    "genus": "Pilea",
+    "title": "Pilea Peperomioides 'Chinese Money'",
+    "net_items_sold": 115,
+    "net_sales": 3993.94
+  },
+  {
+    "genus": "Sedum",
+    "title": "Sedum Donkey's Tail Succulent - Sedum Burrito",
+    "net_items_sold": 348,
+    "net_sales": 3904.7
+  },
+  {
+    "genus": "Callisia",
+    "title": "Callisia Repens f. variegata Pink Lady (Turtle Vine) - Pink Panther Plant",
+    "net_items_sold": 291,
+    "net_sales": 3850.31
+  },
+  {
+    "genus": "Ceropegia",
+    "title": "Variegated String of Hearts - Ceropegia woodii f. variegata",
+    "net_items_sold": 108,
+    "net_sales": 3413.63
+  },
+  {
+    "genus": "Hedera",
+    "title": "Glacier English Ivy",
+    "net_items_sold": 121,
+    "net_sales": 3179.21
+  },
+  {
+    "genus": "Monstera",
+    "title": "Monstera 'Thai Constellation'",
+    "net_items_sold": 94,
+    "net_sales": 2942.72
+  },
+  {
+    "genus": "Sansevieria",
+    "title": "Snake Plant Sansevieria Laurentii",
+    "net_items_sold": 88,
+    "net_sales": 2398.89
+  },
+  {
+    "genus": "Haworthia",
+    "title": "Haworthia Zebra - Haworthia fasciata Plant",
+    "net_items_sold": 193,
+    "net_sales": 2147.49
+  },
+  {
+    "genus": "Hedera",
+    "title": "Golden English Ivy",
+    "net_items_sold": 87,
+    "net_sales": 2037.11
+  },
+  {
+    "genus": "Zamioculcas",
+    "title": "ZZ Zamioculcas 'Black Queen'",
+    "net_items_sold": 60,
+    "net_sales": 1998.88
+  },
+  {
+    "genus": "Pothos",
+    "title": "Pothos N'joy",
+    "net_items_sold": 90,
+    "net_sales": 1979.06
+  },
+  {
+    "genus": "Alocasia",
+    "title": "Alocasia Micholitziana 'Frydek' Variegated",
+    "net_items_sold": 53,
+    "net_sales": 1961.61
+  },
+  {
+    "genus": "Pothos",
+    "title": "Pothos 'Golden'",
+    "net_items_sold": 75,
+    "net_sales": 1769.92
+  },
+  {
+    "genus": "Maranta",
+    "title": "Maranta Lemon Lime",
+    "net_items_sold": 64,
+    "net_sales": 1750.57
+  },
+  {
+    "genus": "Chlorophytum",
+    "title": "Curly Spider Plant 'Bonnie'",
+    "net_items_sold": 69,
+    "net_sales": 1679.8
+  },
+  {
+    "genus": "Monstera",
+    "title": "Monstera Adansonii 'Swiss Cheese'",
+    "net_items_sold": 59,
+    "net_sales": 1679.66
+  },
+  {
+    "genus": "Calathea",
+    "title": "Calathea Lancifolia 'Rattlesnake' Plant",
+    "net_items_sold": 63,
+    "net_sales": 1676.53
+  },
+  {
+    "genus": "Aglaonema",
+    "title": "Chinese Evergreen 'Lady Valentine'",
+    "net_items_sold": 44,
+    "net_sales": 1421.55
+  },
+  {
+    "genus": "Tillandsia",
+    "title": "1 Airplant 1 Succulent/ Month | Succulent Subscription Boxes",
+    "net_items_sold": 98,
+    "net_sales": 1332.82
+  },
+  {
+    "genus": "Hoya",
+    "title": "Hoya Sweetheart",
+    "net_items_sold": 68,
+    "net_sales": 1312.11
+  },
+  {
+    "genus": "Maranta",
+    "title": "Maranta Red Prayer",
+    "net_items_sold": 48,
+    "net_sales": 1294.36
+  },
+  {
+    "genus": "Philodendron",
+    "title": "Philodendron Mini Monstera Minima",
+    "net_items_sold": 46,
+    "net_sales": 1229.89
+  },
+  {
+    "genus": "Senecio",
+    "title": "String Of Pearls Senecio Rowleyanus",
+    "net_items_sold": 44,
+    "net_sales": 1199.01
+  },
+  {
+    "genus": "Peperomia",
+    "title": "Peperomia Watermelon",
+    "net_items_sold": 40,
+    "net_sales": 1159.83
+  },
+  {
+    "genus": "Tillandsia",
+    "title": "1 Airplant 1 Succulent/ Month - 12 month Subscription",
+    "net_items_sold": 99,
+    "net_sales": 1148.69
+  },
+  {
+    "genus": "Syngonium",
+    "title": "Syngonium 'Milk Confetti'",
+    "net_items_sold": 43,
+    "net_sales": 1146.36
+  },
+  {
+    "genus": "Senecio",
+    "title": "Variegated String Of Pearls - Senecio rowleyanus f. variegatus",
+    "net_items_sold": 69,
+    "net_sales": 1108.87
+  },
+  {
+    "genus": "Ceropegia",
+    "title": "String Of Hearts Ceropegia woodii",
+    "net_items_sold": 55,
+    "net_sales": 1092.66
+  },
+  {
+    "genus": "Senecio",
+    "title": "String of Dolphins Senecio Peregrinus Succulent",
+    "net_items_sold": 94,
+    "net_sales": 1087.83
+  },
+  {
+    "genus": "Tillandsia",
+    "title": "1 Airplant 1 Succulent/ Month - 6 month Subscription",
+    "net_items_sold": 120,
+    "net_sales": 948.79
+  },
+  {
+    "genus": "Pothos",
+    "title": "Pothos 'Neon'",
+    "net_items_sold": 41,
+    "net_sales": 918.25
+  },
+  {
+    "genus": "Peperomia",
+    "title": "String Of Turtles",
+    "net_items_sold": 35,
+    "net_sales": 879.07
+  },
+  {
+    "genus": "Hoya",
+    "title": "Hoya Rope Plant",
+    "net_items_sold": 33,
+    "net_sales": 871.33
+  },
+  {
+    "genus": "Sempervivum",
+    "title": "Sempervivum Succulent Pack",
+    "net_items_sold": 27,
+    "net_sales": 826.79
+  },
+  {
+    "genus": "Hoya",
+    "title": "Hoya 'Rope Plant' Variegated",
+    "net_items_sold": 32,
+    "net_sales": 824.02
+  },
+  {
+    "genus": "Haworthia",
+    "title": "Window Haworthia - Haworthia retusa f. geraldii",
+    "net_items_sold": 75,
+    "net_sales": 815.76
+  },
+  {
+    "genus": "Crassula",
+    "title": "Calico Kitten Crassula - Crassula pellucida f. variegata",
+    "net_items_sold": 91,
+    "net_sales": 804.69
+  },
+  {
+    "genus": "Echeveria",
+    "title": "Echeveria Perle Von Nurnberg",
+    "net_items_sold": 86,
+    "net_sales": 787.89
+  },
+  {
+    "genus": "Zamioculcas",
+    "title": "ZZ Plant",
+    "net_items_sold": 24,
+    "net_sales": 739.87
+  },
+  {
+    "genus": "Aglaonema",
+    "title": "Chinese Evergreen 'Ruby Garuda'",
+    "net_items_sold": 27,
+    "net_sales": 728.81
+  },
+  {
+    "genus": "Senecio",
+    "title": "Senecio radicans String of Bananas",
+    "net_items_sold": 71,
+    "net_sales": 708.54
+  },
+  {
+    "genus": "Philodendron",
+    "title": "Philodendron Monstera Split-Leaf",
+    "net_items_sold": 25,
+    "net_sales": 686.16
+  },
+  {
+    "genus": "Sansevieria",
+    "title": "Snake Plant Black Gold Sansevieria",
+    "net_items_sold": 34,
+    "net_sales": 667.61
+  },
+  {
+    "genus": "Dracaena",
+    "title": "Dracaena 'Tornado'",
+    "net_items_sold": 26,
+    "net_sales": 650.28
+  },
+  {
+    "genus": "Pothos",
+    "title": "Pothos Manjula",
+    "net_items_sold": 22,
+    "net_sales": 648.71
+  },
+  {
+    "genus": "Chlorophytum",
+    "title": "Spider Plant Hawaiian",
+    "net_items_sold": 34,
+    "net_sales": 641.69
+  },
+  {
+    "genus": "Sansevieria",
+    "title": "Snake Plant Sansevieria Gold Flame",
+    "net_items_sold": 21,
+    "net_sales": 622.7
+  },
+  {
+    "genus": "Philodendron",
+    "title": "Philodendron 'Velvet' - Philodendron Micans",
+    "net_items_sold": 23,
+    "net_sales": 618.05
+  }
+]

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Price Intelligence{% endblock %} — Succulents Box</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#f0faf4',
+              100: '#dcf5e7',
+              200: '#bbead0',
+              300: '#88d8b0',
+              400: '#52be8a',
+              500: '#2d9e6b',
+              600: '#2d6a4f',
+              700: '#245741',
+              800: '#1e4535',
+              900: '#19392d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+  <!-- Nav -->
+  <nav class="bg-brand-600 shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">🌵</span>
+          <span class="text-white font-bold text-lg tracking-tight">Succulents Box</span>
+          <span class="text-brand-200 text-sm ml-1 hidden sm:inline">/ Price Intel</span>
+        </div>
+        <div class="flex items-center gap-1 sm:gap-2">
+          <a href="{{ url_for('main.dashboard') }}"
+             class="text-brand-100 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+            Dashboard
+          </a>
+          <a href="{{ url_for('main.products') }}"
+             class="text-brand-100 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+            Products
+          </a>
+          <a href="{{ url_for('main.review_queue') }}"
+             class="text-brand-100 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+            Review Queue
+          </a>
+          <a href="{{ url_for('main.export_csv') }}"
+             class="text-brand-100 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
+            Export CSV
+          </a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="mt-16 border-t border-gray-200 py-6 text-center text-gray-400 text-sm">
+    Succulents Box Internal Price Intelligence Tool
+  </footer>
+
+</body>
+</html>
