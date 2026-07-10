@@ -23,12 +23,17 @@ def _run_in_background(task_id: str, fn, *args):
     def worker():
         with app.app_context():
             try:
+                print(f"[task {task_id}] starting {fn.__name__}", flush=True)
                 db = _connect()
+                print(f"[task {task_id}] DB connected", flush=True)
                 result = fn(db, *args)
                 db.commit()
                 db.close()
+                print(f"[task {task_id}] done: {result}", flush=True)
                 _tasks[task_id] = {'status': 'done', 'result': result}
             except Exception as e:
+                import traceback
+                print(f"[task {task_id}] ERROR: {e}\n{traceback.format_exc()}", flush=True)
                 _tasks[task_id] = {'status': 'error', 'error': str(e)}
 
     _tasks[task_id] = {'status': 'running'}

@@ -191,7 +191,9 @@ def sync_sb_products(db_conn):
     errors = 0
     now = datetime.utcnow().isoformat()
 
-    for raw in raw_products:
+    print(f"[sync_sb] fetched {len(raw_products)} products from succulentsbox.com", flush=True)
+
+    for i, raw in enumerate(raw_products):
         try:
             external_id = str(raw.get('id', ''))
             title = raw.get('title', '').strip()
@@ -209,7 +211,8 @@ def sync_sb_products(db_conn):
             price_min = min(prices) if prices else 0
             price_max = max(prices) if prices else 0
 
-            cursor.execute('''
+            # RETURNING id avoids a separate SELECT round trip
+            row = cursor.execute('''
                 INSERT INTO sb_products (external_id, title, handle, product_type, url,
                                          price_min, price_max, synced_at, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -221,39 +224,52 @@ def sync_sb_products(db_conn):
                     price_min=EXCLUDED.price_min,
                     price_max=EXCLUDED.price_max,
                     synced_at=EXCLUDED.synced_at
+                RETURNING id
             ''', (external_id, title, handle, product_type, url,
-                  price_min, price_max, now, now))
+                  price_min, price_max, now, now)).fetchone()
+            product_id = row[0]
 
-            product_id = cursor.execute(
-                'SELECT id FROM sb_products WHERE external_id=%s', (external_id,)
-            ).fetchone()[0]
+            # Batch all variants into one INSERT to cut N round trips → 1
+            if variants:
+                variant_rows = []
+                for v in variants:
+                    ext_variant_id = str(v.get('id', ''))
+                    variant_title = v.get('title', '')
+                    try:
+                        price = float(v.get('price', 0))
+                    except (ValueError, TypeError):
+                        price = 0.0
+                    available = 1 if v.get('available', True) else 0
+                    sku = v.get('sku', '')
+                    variant_rows.append((product_id, ext_variant_id, variant_title,
+                                         price, available, sku, now))
 
-            for v in variants:
-                ext_variant_id = str(v.get('id', ''))
-                variant_title = v.get('title', '')
-                try:
-                    price = float(v.get('price', 0))
-                except (ValueError, TypeError):
-                    price = 0.0
-                available = 1 if v.get('available', True) else 0
-                sku = v.get('sku', '')
-
-                cursor.execute('''
+                placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s, %s)'] * len(variant_rows))
+                flat_values = [val for row in variant_rows for val in row]
+                cursor.execute(f'''
                     INSERT INTO sb_variants (product_id, external_variant_id, variant_title,
                                              price, available, sku, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES {placeholders}
                     ON CONFLICT(external_variant_id) DO UPDATE SET
                         variant_title=EXCLUDED.variant_title,
                         price=EXCLUDED.price,
                         available=EXCLUDED.available,
                         sku=EXCLUDED.sku
-                ''', (product_id, ext_variant_id, variant_title, price, available, sku, now))
+                ''', flat_values)
 
             synced += 1
-        except Exception:
+
+            # Commit every 50 products so data appears in Supabase incrementally
+            if (i + 1) % 50 == 0:
+                db_conn.commit()
+                print(f"[sync_sb] committed {synced} products so far...", flush=True)
+
+        except Exception as e:
+            print(f"[sync_sb] error on product {i}: {e}", flush=True)
             errors += 1
 
     db_conn.commit()
+    print(f"[sync_sb] done: synced={synced} errors={errors}", flush=True)
     return {'synced': synced, 'errors': errors}
 
 
