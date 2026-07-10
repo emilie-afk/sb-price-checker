@@ -204,8 +204,12 @@ async function runAction(endpoint, btnId, msgId) {
     // If session expired, server redirects to login page (HTML, not JSON)
     const ct = resp.headers.get('content-type') || '';
     if (!ct.includes('application/json')) {
-      msg.className = 'mt-3 text-sm text-yellow-700 bg-yellow-50 rounded p-2';
-      msg.textContent = 'Session expired — please reload the page and try again.';
+      msg.className = 'mt-3 text-sm text-red-600 bg-red-50 rounded p-2';
+      if (resp.status === 401 || resp.redirected) {
+        msg.textContent = 'Session expired — please reload and log in again.';
+      } else {
+        msg.textContent = `Server error (HTTP ${resp.status}) — check Render logs for details.`;
+      }
       btn.disabled = false;
       spinner.classList.add('hidden');
       return;
