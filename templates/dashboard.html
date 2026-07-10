@@ -196,47 +196,70 @@ async function runAction(endpoint, btnId, msgId) {
   btn.disabled = true;
   spinner.classList.remove('hidden');
   msg.className = 'mt-3 text-sm text-gray-500';
-  msg.textContent = 'Running… this may take a few minutes.';
+  msg.textContent = 'Starting…';
   msg.classList.remove('hidden');
 
   try {
+    // Start the job — returns immediately with a task_id
     const resp = await fetch('/' + endpoint, { method: 'POST' });
-    // If session expired, server redirects to login page (HTML, not JSON)
     const ct = resp.headers.get('content-type') || '';
     if (!ct.includes('application/json')) {
       msg.className = 'mt-3 text-sm text-red-600 bg-red-50 rounded p-2';
-      if (resp.status === 401 || resp.redirected) {
-        msg.textContent = 'Session expired — please reload and log in again.';
-      } else {
-        msg.textContent = `Server error (HTTP ${resp.status}) — check Render logs for details.`;
-      }
+      msg.textContent = resp.redirected
+        ? 'Session expired — please reload and log in again.'
+        : `Server error (HTTP ${resp.status}) — check Render logs.`;
       btn.disabled = false;
       spinner.classList.add('hidden');
       return;
     }
-    const data = await resp.json();
-    if (data.success) {
-      msg.className = 'mt-3 text-sm text-green-600 bg-green-50 rounded p-2';
-      if (endpoint === 'sync-sb') {
-        const r = data.result || {};
-        msg.textContent = `Done! Synced ${r.synced || 0} products from succulentsbox.com.`;
-      } else if (endpoint === 'collect') {
-        const parts = Object.entries(data.results || {}).map(([k, v]) =>
-          `${k}: ${v.products || 0} products`);
-        msg.textContent = 'Done! ' + (parts.join(', ') || 'No results');
-      } else {
-        const s = data.summary || {};
-        msg.textContent = `Done! Matched: ${s.matched || 0}, Skipped: ${s.skipped || 0}, Errors: ${s.errors || 0}`;
-      }
-      setTimeout(() => location.reload(), 2000);
-    } else {
+    const start = await resp.json();
+    if (!start.success) {
       msg.className = 'mt-3 text-sm text-red-600 bg-red-50 rounded p-2';
-      msg.textContent = 'Error: ' + (data.error || 'Unknown error');
+      msg.textContent = 'Error: ' + (start.error || 'Unknown');
+      btn.disabled = false;
+      spinner.classList.add('hidden');
+      return;
     }
+
+    // Poll for completion
+    msg.textContent = 'Running… this may take a few minutes.';
+    const taskId = start.task_id;
+    let dots = 0;
+    const poll = setInterval(async () => {
+      dots = (dots + 1) % 4;
+      msg.textContent = 'Running' + '.'.repeat(dots + 1);
+      try {
+        const r = await fetch('/task-status/' + taskId);
+        const task = await r.json();
+        if (task.status === 'done') {
+          clearInterval(poll);
+          btn.disabled = false;
+          spinner.classList.add('hidden');
+          msg.className = 'mt-3 text-sm text-green-600 bg-green-50 rounded p-2';
+          const result = task.result || {};
+          if (endpoint === 'sync-sb') {
+            msg.textContent = `Done! Synced ${result.synced || 0} products.`;
+          } else if (endpoint === 'collect') {
+            const parts = Object.entries(result).map(([k, v]) =>
+              `${k.replace(/_/g,' ')}: ${v.products || 0}`);
+            msg.textContent = 'Done! ' + (parts.join(' | ') || 'No results');
+          } else {
+            msg.textContent = `Done! Matched: ${result.matched || 0}, Skipped: ${result.skipped || 0}, Errors: ${result.errors || 0}`;
+          }
+          setTimeout(() => location.reload(), 2000);
+        } else if (task.status === 'error') {
+          clearInterval(poll);
+          btn.disabled = false;
+          spinner.classList.add('hidden');
+          msg.className = 'mt-3 text-sm text-red-600 bg-red-50 rounded p-2';
+          msg.textContent = 'Error: ' + (task.error || 'Unknown error');
+        }
+      } catch (e) { /* keep polling */ }
+    }, 3000);
+
   } catch (e) {
     msg.className = 'mt-3 text-sm text-red-600 bg-red-50 rounded p-2';
     msg.textContent = 'Request failed: ' + e.message;
-  } finally {
     btn.disabled = false;
     spinner.classList.add('hidden');
   }
