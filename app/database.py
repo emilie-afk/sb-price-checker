@@ -1,6 +1,7 @@
 import os
 import psycopg
 from psycopg.rows import namedtuple_row
+from urllib.parse import urlparse, unquote
 from flask import g, current_app
 
 
@@ -28,7 +29,15 @@ class _DbWrapper:
 
 def _connect():
     dsn = current_app.config['DATABASE_URL']
-    conn = psycopg.connect(dsn)
+    # Parse URL manually so special characters in the password are handled correctly
+    p = urlparse(dsn)
+    conn = psycopg.connect(
+        host=p.hostname,
+        port=p.port or 5432,
+        dbname=p.path.lstrip('/'),
+        user=unquote(p.username or ''),
+        password=unquote(p.password or ''),
+    )
     return _DbWrapper(conn)
 
 
