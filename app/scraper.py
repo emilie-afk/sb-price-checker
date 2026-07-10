@@ -57,85 +57,6 @@ def fetch_shopify_products(url_template):
     return products
 
 
-def sync_sb_products(db_conn):
-    """Fetch all SB products from succulentsbox.com and store/update in db.
-    Returns {'synced': N, 'errors': N}."""
-    cursor = db_conn.cursor()
-    raw_products = fetch_shopify_products(SB_URL_TEMPLATE)
-
-    synced = 0
-    errors = 0
-    now = datetime.utcnow().isoformat()
-
-    for raw in raw_products:
-        try:
-            external_id = str(raw.get('id', ''))
-            title = raw.get('title', '').strip()
-            handle = raw.get('handle', '')
-            product_type = raw.get('product_type', '')
-            url = f"https://succulentsbox.com/products/{handle}" if handle else None
-
-            variants = raw.get('variants', [])
-            prices = []
-            for v in variants:
-                try:
-                    prices.append(float(v.get('price', 0)))
-                except (ValueError, TypeError):
-                    pass
-            price_min = min(prices) if prices else 0
-            price_max = max(prices) if prices else 0
-
-            # Upsert product
-            cursor.execute('''
-                INSERT INTO sb_products (external_id, title, handle, product_type, url,
-                                         price_min, price_max, synced_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(external_id) DO UPDATE SET
-                    title=excluded.title,
-                    handle=excluded.handle,
-                    product_type=excluded.product_type,
-                    url=excluded.url,
-                    price_min=excluded.price_min,
-                    price_max=excluded.price_max,
-                    synced_at=excluded.synced_at
-            ''', (external_id, title, handle, product_type, url,
-                  price_min, price_max, now, now))
-
-            # Get product id
-            product_id = cursor.execute(
-                'SELECT id FROM sb_products WHERE external_id=?', (external_id,)
-            ).fetchone()[0]
-
-            # Upsert variants
-            for v in variants:
-                ext_variant_id = str(v.get('id', ''))
-                variant_title = v.get('title', '')
-                try:
-                    price = float(v.get('price', 0))
-                except (ValueError, TypeError):
-                    price = 0.0
-                available = 1 if v.get('available', True) else 0
-                sku = v.get('sku', '')
-
-                cursor.execute('''
-                    INSERT INTO sb_variants (product_id, external_variant_id, variant_title,
-                                             price, available, sku)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(external_variant_id) DO UPDATE SET
-                        variant_title=excluded.variant_title,
-                        price=excluded.price,
-                        available=excluded.available,
-                        sku=excluded.sku
-                ''', (product_id, ext_variant_id, variant_title, price, available, sku))
-
-            synced += 1
-        except Exception:
-            errors += 1
-
-    db_conn.commit()
-    return {'synced': synced, 'errors': errors}
-
-
 def fetch_mcg_bigcommerce():
     """Fetch MCG products via BigCommerce HTML scraping.
     Uses curl-cffi for Chrome TLS fingerprint to bypass Cloudflare bot protection.
@@ -167,14 +88,12 @@ def fetch_mcg_bigcommerce():
             # BigCommerce Stencil: products are article.card inside .productGrid
             cards = soup.select('article.card')
             if not cards:
-                # Fallback selectors for custom themes
                 cards = soup.select('.product-item') or soup.select('.productGrid .product')
             if not cards:
                 break
 
             found_any = False
             for card in cards:
-                # Get title + URL
                 link = (card.select_one('.card-title a') or
                         card.select_one('h3 a') or
                         card.select_one('h4 a') or
@@ -189,13 +108,11 @@ def fetch_mcg_bigcommerce():
                 if not href.startswith('http'):
                     href = MCG_BASE + href
 
-                # Skip non-product URLs (categories, etc.)
                 if any(x in href for x in ['/explore-all', '/categories', 'javascript']):
                     continue
 
                 slug = href.rstrip('/').split('/')[-1]
 
-                # Get listed price (may be "from" price for multi-variant products)
                 price_el = (card.select_one('.price--withoutTax') or
                             card.select_one('.price') or
                             card.select_one('[data-product-price]'))
@@ -207,7 +124,6 @@ def fetch_mcg_bigcommerce():
                 if not title or price == 0:
                     continue
 
-                # Format as Shopify-compatible dict so existing parse_product works
                 raw_products.append({
                     'id': slug,
                     'title': title,
@@ -229,7 +145,6 @@ def fetch_mcg_bigcommerce():
             if not found_any:
                 break
 
-            # Check for next page link
             next_link = (soup.select_one('.pagination-item--next a') or
                          soup.select_one('a[aria-label="Next"]') or
                          soup.select_one('.pagination-next a'))
@@ -243,6 +158,81 @@ def fetch_mcg_bigcommerce():
             break
 
     return raw_products
+
+
+def sync_sb_products(db_conn):
+    """Fetch all SB products from succulentsbox.com and store/update in db."""
+    cursor = db_conn.cursor()
+    raw_products = fetch_shopify_products(SB_URL_TEMPLATE)
+
+    synced = 0
+    errors = 0
+    now = datetime.utcnow().isoformat()
+
+    for raw in raw_products:
+        try:
+            external_id = str(raw.get('id', ''))
+            title = raw.get('title', '').strip()
+            handle = raw.get('handle', '')
+            product_type = raw.get('product_type', '')
+            url = f"https://succulentsbox.com/products/{handle}" if handle else None
+
+            variants = raw.get('variants', [])
+            prices = []
+            for v in variants:
+                try:
+                    prices.append(float(v.get('price', 0)))
+                except (ValueError, TypeError):
+                    pass
+            price_min = min(prices) if prices else 0
+            price_max = max(prices) if prices else 0
+
+            cursor.execute('''
+                INSERT INTO sb_products (external_id, title, handle, product_type, url,
+                                         price_min, price_max, synced_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(external_id) DO UPDATE SET
+                    title=EXCLUDED.title,
+                    handle=EXCLUDED.handle,
+                    product_type=EXCLUDED.product_type,
+                    url=EXCLUDED.url,
+                    price_min=EXCLUDED.price_min,
+                    price_max=EXCLUDED.price_max,
+                    synced_at=EXCLUDED.synced_at
+            ''', (external_id, title, handle, product_type, url,
+                  price_min, price_max, now, now))
+
+            product_id = cursor.execute(
+                'SELECT id FROM sb_products WHERE external_id=%s', (external_id,)
+            ).fetchone()[0]
+
+            for v in variants:
+                ext_variant_id = str(v.get('id', ''))
+                variant_title = v.get('title', '')
+                try:
+                    price = float(v.get('price', 0))
+                except (ValueError, TypeError):
+                    price = 0.0
+                available = 1 if v.get('available', True) else 0
+                sku = v.get('sku', '')
+
+                cursor.execute('''
+                    INSERT INTO sb_variants (product_id, external_variant_id, variant_title,
+                                             price, available, sku, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(external_variant_id) DO UPDATE SET
+                        variant_title=EXCLUDED.variant_title,
+                        price=EXCLUDED.price,
+                        available=EXCLUDED.available,
+                        sku=EXCLUDED.sku
+                ''', (product_id, ext_variant_id, variant_title, price, available, sku, now))
+
+            synced += 1
+        except Exception:
+            errors += 1
+
+    db_conn.commit()
+    return {'synced': synced, 'errors': errors}
 
 
 def fetch_products(source_key):
@@ -269,7 +259,6 @@ def parse_product(raw, source_key):
     image_url = images[0]['src'] if images else None
     desc = _strip_html(raw.get('body_html', ''))
     handle = raw.get('handle', '')
-    # BigCommerce products include _url_override; Shopify products use /products/<handle>
     url = raw.get('_url_override') or (f"{competitor['base_url']}/products/{handle}" if handle else None)
 
     product = {
@@ -317,19 +306,19 @@ def run_collection(db_conn):
                 cursor.execute('''
                     INSERT INTO competitor_products
                     (source, external_id, title, handle, product_type, description, url, image_url, collected_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT(source, external_id) DO UPDATE SET
-                        title=excluded.title,
-                        product_type=excluded.product_type,
-                        description=excluded.description,
-                        url=excluded.url,
-                        image_url=excluded.image_url,
-                        collected_at=excluded.collected_at
+                        title=EXCLUDED.title,
+                        product_type=EXCLUDED.product_type,
+                        description=EXCLUDED.description,
+                        url=EXCLUDED.url,
+                        image_url=EXCLUDED.image_url,
+                        collected_at=EXCLUDED.collected_at
                 ''', (product['source'], product['external_id'], product['title'],
                       product['handle'], product['product_type'], product['description'],
                       product['url'], product['image_url'], now))
 
-                cursor.execute('SELECT id FROM competitor_products WHERE source=? AND external_id=?',
+                cursor.execute('SELECT id FROM competitor_products WHERE source=%s AND external_id=%s',
                                (source_key, product['external_id']))
                 row = cursor.fetchone()
                 if not row:
@@ -338,36 +327,37 @@ def run_collection(db_conn):
 
                 for v in variants:
                     cursor.execute('''
-                        INSERT OR IGNORE INTO competitor_variants
+                        INSERT INTO competitor_variants
                         (product_id, external_variant_id, variant_title, price, available, sku, collected_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
                     ''', (product_id, v['external_variant_id'], v['variant_title'],
                           v['price'], v['available'], v['sku'], now))
 
                     vrow = cursor.execute(
-                        'SELECT id FROM competitor_variants WHERE external_variant_id=? AND product_id=?',
+                        'SELECT id FROM competitor_variants WHERE external_variant_id=%s AND product_id=%s',
                         (v['external_variant_id'], product_id)
                     ).fetchone()
                     if vrow:
                         cursor.execute(
-                            'INSERT INTO price_snapshots (variant_id, price, available) VALUES (?, ?, ?)',
-                            (vrow[0], v['price'], v['available'])
+                            'INSERT INTO price_snapshots (variant_id, price, available, captured_at) VALUES (%s, %s, %s, %s)',
+                            (vrow[0], v['price'], v['available'], now)
                         )
                 count += 1
 
             db_conn.commit()
 
             cursor.execute(
-                'INSERT INTO collection_log (source, products_found, status, message) VALUES (?, ?, ?, ?)',
-                (source_key, count, 'success', f'Collected {count} products')
+                'INSERT INTO collection_log (source, products_found, status, message, ran_at) VALUES (%s, %s, %s, %s, %s)',
+                (source_key, count, 'success', f'Collected {count} products', now)
             )
             db_conn.commit()
             results[source_key] = {'status': 'success', 'products': count}
 
         except Exception as e:
             cursor.execute(
-                'INSERT INTO collection_log (source, products_found, status, message) VALUES (?, ?, ?, ?)',
-                (source_key, 0, 'error', str(e))
+                'INSERT INTO collection_log (source, products_found, status, message, ran_at) VALUES (%s, %s, %s, %s, %s)',
+                (source_key, 0, 'error', str(e), datetime.utcnow().isoformat())
             )
             db_conn.commit()
             results[source_key] = {'status': 'error', 'message': str(e)}

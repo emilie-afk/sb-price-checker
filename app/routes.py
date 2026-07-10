@@ -39,17 +39,17 @@ def logout():
 def dashboard():
     db = get_db()
 
-    sb_count = db.execute('SELECT COUNT(*) FROM sb_products WHERE tracked=1').fetchone()[0]
+    sb_count = db.execute('SELECT COUNT(*) as cnt FROM sb_products WHERE tracked=1').fetchone()[0]
     sb_synced = db.execute("SELECT MAX(synced_at) FROM sb_products WHERE synced_at IS NOT NULL").fetchone()[0]
-    products_count = db.execute('SELECT COUNT(*) FROM competitor_products').fetchone()[0]
-    variants_count = db.execute('SELECT COUNT(*) FROM competitor_variants').fetchone()[0]
+    products_count = db.execute('SELECT COUNT(*) as cnt FROM competitor_products').fetchone()[0]
+    variants_count = db.execute('SELECT COUNT(*) as cnt FROM competitor_variants').fetchone()[0]
 
-    matches_pending = db.execute("SELECT COUNT(*) FROM matches WHERE status='pending'").fetchone()[0]
-    matches_accepted = db.execute("SELECT COUNT(*) FROM matches WHERE status='accepted'").fetchone()[0]
+    matches_pending = db.execute("SELECT COUNT(*) as cnt FROM matches WHERE status='pending'").fetchone()[0]
+    matches_accepted = db.execute("SELECT COUNT(*) as cnt FROM matches WHERE status='accepted'").fetchone()[0]
 
-    above = db.execute("SELECT COUNT(DISTINCT sb_product_id) FROM matches WHERE market_position='above_market' AND status='accepted'").fetchone()[0]
-    near = db.execute("SELECT COUNT(DISTINCT sb_product_id) FROM matches WHERE market_position='near_market' AND status='accepted'").fetchone()[0]
-    below = db.execute("SELECT COUNT(DISTINCT sb_product_id) FROM matches WHERE market_position='below_market' AND status='accepted'").fetchone()[0]
+    above = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='above_market' AND status='accepted'").fetchone()[0]
+    near  = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='near_market'  AND status='accepted'").fetchone()[0]
+    below = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='below_market' AND status='accepted'").fetchone()[0]
 
     by_source = db.execute('''
         SELECT source, COUNT(*) as products FROM competitor_products GROUP BY source
@@ -93,12 +93,12 @@ def products():
 @bp.route('/products/<int:product_id>')
 def product_detail(product_id):
     db = get_db()
-    product = db.execute('SELECT * FROM sb_products WHERE id=?', (product_id,)).fetchone()
+    product = db.execute('SELECT * FROM sb_products WHERE id=%s', (product_id,)).fetchone()
     if not product:
         return redirect(url_for('main.products'))
 
     sb_variants = db.execute(
-        'SELECT variant_title, price, available FROM sb_variants WHERE product_id=? ORDER BY price ASC',
+        'SELECT variant_title, price, available FROM sb_variants WHERE product_id=%s ORDER BY price ASC',
         (product_id,)
     ).fetchall()
 
@@ -110,7 +110,7 @@ def product_detail(product_id):
         FROM matches m
         JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
         JOIN competitor_products cp ON cp.id = cv.product_id
-        WHERE m.sb_product_id = ?
+        WHERE m.sb_product_id = %s
         ORDER BY m.confidence DESC
     ''', (product_id,)).fetchall()
 
@@ -121,7 +121,7 @@ def product_detail(product_id):
 @bp.route('/matches/<int:match_id>/accept', methods=['POST'])
 def accept_match(match_id):
     db = get_db()
-    db.execute("UPDATE matches SET status='accepted', reviewed_at=? WHERE id=?",
+    db.execute("UPDATE matches SET status='accepted', reviewed_at=%s WHERE id=%s",
                (datetime.utcnow().isoformat(), match_id))
     db.commit()
     return jsonify({'success': True})
@@ -130,7 +130,7 @@ def accept_match(match_id):
 @bp.route('/matches/<int:match_id>/reject', methods=['POST'])
 def reject_match(match_id):
     db = get_db()
-    db.execute("UPDATE matches SET status='rejected', reviewed_at=? WHERE id=?",
+    db.execute("UPDATE matches SET status='rejected', reviewed_at=%s WHERE id=%s",
                (datetime.utcnow().isoformat(), match_id))
     db.commit()
     return jsonify({'success': True})

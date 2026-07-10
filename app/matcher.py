@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from datetime import datetime
 from anthropic import Anthropic
 
 client = None
@@ -116,7 +117,10 @@ def run_matching(db_conn):
     summary = {'matched': 0, 'skipped': 0, 'errors': 0}
 
     for sb_row in sb_products:
-        sb_id, sb_title, sb_product_type = sb_row
+        # NamedTupleCursor returns named tuples — use attribute or index access
+        sb_id = sb_row[0]
+        sb_title = sb_row[1]
+        sb_product_type = sb_row[2]
 
         # Skip non-plant products
         skip_types = {'gift cards', 'gift card'}
@@ -129,10 +133,11 @@ def run_matching(db_conn):
 
         # Get SB variants for price comparison
         sb_variants_rows = cursor.execute(
-            'SELECT variant_title, price, available FROM sb_variants WHERE product_id=?',
+            'SELECT variant_title, price, available FROM sb_variants WHERE product_id=%s',
             (sb_id,)
         ).fetchall()
-        sb_variants = [dict(v) for v in sb_variants_rows]
+        # Convert named tuples to dicts so _format_sb_prices / _closest_sb_price can use ['key'] access
+        sb_variants = [v._asdict() for v in sb_variants_rows]
 
         search_terms = _keyword_search_terms(sb_title)
         candidate_ids = set()
@@ -141,7 +146,7 @@ def run_matching(db_conn):
                 SELECT cv.id
                 FROM competitor_products cp
                 JOIN competitor_variants cv ON cv.product_id = cp.id
-                WHERE LOWER(cp.title) LIKE LOWER(?)
+                WHERE LOWER(cp.title) LIKE LOWER(%s)
                 AND cv.price > 0 AND cv.available = 1
             ''', (f'%{term}%',))
             for row in cursor.fetchall():
@@ -150,10 +155,10 @@ def run_matching(db_conn):
         if not candidate_ids:
             continue
 
-        placeholders = ','.join('?' * len(candidate_ids))
+        placeholders = ','.join(['%s'] * len(candidate_ids))
         cursor.execute(f'''
             SELECT cp.id, cp.source, cp.title, cp.product_type, cp.description, cp.url,
-                   cv.id, cv.variant_title, cv.price, cv.available
+                   cv.id AS variant_id, cv.variant_title, cv.price, cv.available
             FROM competitor_products cp
             JOIN competitor_variants cv ON cv.product_id = cp.id
             WHERE cv.id IN ({placeholders})
@@ -161,11 +166,19 @@ def run_matching(db_conn):
         candidates = cursor.fetchall()
 
         for c in candidates:
-            (prod_id, source, comp_title, prod_type, desc, url,
-             variant_id, variant_title, price, available) = c
+            prod_id   = c[0]
+            source    = c[1]
+            comp_title= c[2]
+            prod_type = c[3]
+            desc      = c[4]
+            url       = c[5]
+            variant_id= c[6]
+            variant_title = c[7]
+            price     = c[8]
+            available = c[9]
 
             cursor.execute(
-                'SELECT id FROM matches WHERE sb_product_id=? AND competitor_variant_id=?',
+                'SELECT id FROM matches WHERE sb_product_id=%s AND competitor_variant_id=%s',
                 (sb_id, variant_id)
             )
             if cursor.fetchone():
@@ -190,21 +203,19 @@ def run_matching(db_conn):
 
                 status = 'accepted' if confidence >= 90 else 'pending'
 
-                # price_diff_pct: (competitor - SB) / SB * 100
-                # Positive = competitor more expensive than SB
-                # Negative = competitor cheaper than SB
                 sb_price = _closest_sb_price(sb_variants, variant_title)
                 price_diff_pct = None
                 if sb_price and sb_price > 0:
                     price_diff_pct = (price - sb_price) / sb_price * 100
 
+                now = datetime.utcnow().isoformat()
                 cursor.execute('''
                     INSERT INTO matches
                     (sb_product_id, competitor_variant_id, relationship, confidence, status,
                      ai_explanation, price_diff_pct, market_position, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (sb_id, variant_id, relationship, confidence, status,
-                      reasoning, price_diff_pct, market_pos))
+                      reasoning, price_diff_pct, market_pos, now))
                 db_conn.commit()
                 summary['matched'] += 1
 
