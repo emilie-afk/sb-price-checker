@@ -1,13 +1,38 @@
 import csv
 import io
+import os
 from datetime import datetime
 from flask import (Blueprint, render_template, jsonify, current_app,
-                   redirect, url_for, make_response, request)
+                   redirect, url_for, make_response, request, session)
 from .database import get_db, execute_db
 from .scraper import run_collection, sync_sb_products
 from .matcher import run_matching
 
 bp = Blueprint('main', __name__)
+
+
+@bp.route('/robots.txt')
+def robots():
+    from flask import Response
+    return Response('User-agent: *\nDisallow: /\n', mimetype='text/plain')
+
+
+@bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        app_password = os.environ.get('APP_PASSWORD', 'succulents2026')
+        if password == app_password:
+            session['authenticated'] = True
+            return redirect(url_for('main.dashboard'))
+        return render_template('login.html', error=True)
+    return render_template('login.html', error=False)
+
+
+@bp.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('main.login'))
 
 
 @bp.route('/')

@@ -201,6 +201,15 @@ async function runAction(endpoint, btnId, msgId) {
 
   try {
     const resp = await fetch('/' + endpoint, { method: 'POST' });
+    // If session expired, server redirects to login page (HTML, not JSON)
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      msg.className = 'mt-3 text-sm text-yellow-700 bg-yellow-50 rounded p-2';
+      msg.textContent = 'Session expired — please reload the page and try again.';
+      btn.disabled = false;
+      spinner.classList.add('hidden');
+      return;
+    }
     const data = await resp.json();
     if (data.success) {
       msg.className = 'mt-3 text-sm text-green-600 bg-green-50 rounded p-2';
