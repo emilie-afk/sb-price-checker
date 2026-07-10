@@ -196,8 +196,8 @@ def export_csv():
 
 @bp.route('/sync-sb', methods=['POST'])
 def sync_sb():
-    db = get_db()
     try:
+        db = get_db()
         result = sync_sb_products(db)
         return jsonify({'success': True, 'result': result})
     except Exception as e:
@@ -206,8 +206,8 @@ def sync_sb():
 
 @bp.route('/collect', methods=['POST'])
 def collect():
-    db = get_db()
     try:
+        db = get_db()
         results = run_collection(db)
         return jsonify({'success': True, 'results': results})
     except Exception as e:
@@ -216,8 +216,8 @@ def collect():
 
 @bp.route('/match', methods=['POST'])
 def run_match():
-    db = get_db()
     try:
+        db = get_db()
         summary = run_matching(db)
         return jsonify({'success': True, 'summary': summary})
     except Exception as e:
