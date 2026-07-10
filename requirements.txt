@@ -2,3 +2,5 @@ flask==3.0.3
 anthropic==0.40.0
 requests==2.32.3
 gunicorn==23.0.0
+curl-cffi==0.7.4
+beautifulsoup4==4.12.3

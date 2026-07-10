@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#f0faf4', 100: '#dcf5e7', 200: '#bbead0',
+              300: '#88d8b0', 400: '#52be8a', 500: '#2d9e6b',
+              600: '#2d6a4f', 700: '#245741', 800: '#1e4535', 900: '#19392d',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+      <span class="text-5xl">🔒</span>
+      <h1 class="text-2xl font-bold text-gray-900 mt-3">Internal Tool</h1>
+      <p class="text-gray-500 text-sm mt-1">Authorized access only</p>
+    </div>
+
+    <div class="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
+      {% if error %}
+      <div class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+        Incorrect password. Try again.
+      </div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('main.login') }}">
+        <label class="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
+        <input type="password" name="password" autofocus
+          class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+          placeholder="Enter password">
+        <button type="submit"
+          class="mt-4 w-full bg-brand-600 hover:bg-brand-700 text-white font-semibold py-2.5 rounded-lg transition-colors">
+          Sign In
+        </button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

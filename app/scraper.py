@@ -8,16 +8,19 @@ COMPETITORS = {
         'name': 'Planet Desert',
         'base_url': 'https://planetdesert.com',
         'collection': 'succulents',
+        'platform': 'shopify',
     },
     'mountain_crest': {
         'name': 'Mountain Crest Gardens',
         'base_url': 'https://mountaincrestgardens.com',
-        'collection': 'succulents',
+        'platform': 'bigcommerce',
+        'catalog_url': 'https://mountaincrestgardens.com/explore-all/',
     },
     'house_plant_shop': {
         'name': 'House Plant Shop',
         'base_url': 'https://houseplantshop.com',
         'url_template': 'https://houseplantshop.com/products.json?limit=250&page={page}',
+        'platform': 'shopify',
     },
 }
 
@@ -133,9 +136,122 @@ def sync_sb_products(db_conn):
     return {'synced': synced, 'errors': errors}
 
 
+def fetch_mcg_bigcommerce():
+    """Fetch MCG products via BigCommerce HTML scraping.
+    Uses curl-cffi for Chrome TLS fingerprint to bypass Cloudflare bot protection.
+    Returns list of standardized product dicts compatible with parse_product."""
+    try:
+        from curl_cffi import requests as cf_requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    MCG_BASE = 'https://mountaincrestgardens.com'
+    raw_products = []
+    page = 1
+
+    while True:
+        url = f'{MCG_BASE}/explore-all/?page={page}'
+        try:
+            resp = cf_requests.get(
+                url,
+                impersonate='chrome120',
+                timeout=30,
+                headers={'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
+            )
+            if resp.status_code != 200:
+                break
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # BigCommerce Stencil: products are article.card inside .productGrid
+            cards = soup.select('article.card')
+            if not cards:
+                # Fallback selectors for custom themes
+                cards = soup.select('.product-item') or soup.select('.productGrid .product')
+            if not cards:
+                break
+
+            found_any = False
+            for card in cards:
+                # Get title + URL
+                link = (card.select_one('.card-title a') or
+                        card.select_one('h3 a') or
+                        card.select_one('h4 a') or
+                        card.select_one('a[href*="/"]'))
+                if not link:
+                    continue
+
+                title = link.get_text(strip=True)
+                href = link.get('href', '')
+                if not href or href.startswith('#'):
+                    continue
+                if not href.startswith('http'):
+                    href = MCG_BASE + href
+
+                # Skip non-product URLs (categories, etc.)
+                if any(x in href for x in ['/explore-all', '/categories', 'javascript']):
+                    continue
+
+                slug = href.rstrip('/').split('/')[-1]
+
+                # Get listed price (may be "from" price for multi-variant products)
+                price_el = (card.select_one('.price--withoutTax') or
+                            card.select_one('.price') or
+                            card.select_one('[data-product-price]'))
+                price_text = price_el.get_text(strip=True) if price_el else ''
+                price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
+                price = float(price_match.group().replace(',', '')) if price_match else 0.0
+                is_from = 'from' in price_text.lower()
+
+                if not title or price == 0:
+                    continue
+
+                # Format as Shopify-compatible dict so existing parse_product works
+                raw_products.append({
+                    'id': slug,
+                    'title': title,
+                    'handle': slug,
+                    'product_type': '',
+                    'body_html': '',
+                    'images': [],
+                    'variants': [{
+                        'id': f'{slug}-default',
+                        'title': 'From' if is_from else 'Default',
+                        'price': str(price),
+                        'available': True,
+                        'sku': '',
+                    }],
+                    '_url_override': href,
+                })
+                found_any = True
+
+            if not found_any:
+                break
+
+            # Check for next page link
+            next_link = (soup.select_one('.pagination-item--next a') or
+                         soup.select_one('a[aria-label="Next"]') or
+                         soup.select_one('.pagination-next a'))
+            if not next_link:
+                break
+
+            page += 1
+            time.sleep(1.5)
+
+        except Exception:
+            break
+
+    return raw_products
+
+
 def fetch_products(source_key):
-    """Fetch all products from a competitor. Returns list of raw Shopify product dicts."""
+    """Fetch all products from a competitor."""
     competitor = COMPETITORS[source_key]
+
+    if competitor.get('platform') == 'bigcommerce':
+        return fetch_mcg_bigcommerce()
+
     if 'url_template' in competitor:
         url_template = competitor['url_template']
     else:
@@ -147,13 +263,14 @@ def fetch_products(source_key):
 
 
 def parse_product(raw, source_key):
-    """Extract standardized fields from a Shopify product JSON."""
+    """Extract standardized fields from a Shopify or BigCommerce product dict."""
     competitor = COMPETITORS[source_key]
     images = raw.get('images', [])
     image_url = images[0]['src'] if images else None
     desc = _strip_html(raw.get('body_html', ''))
     handle = raw.get('handle', '')
-    url = f"{competitor['base_url']}/products/{handle}" if handle else None
+    # BigCommerce products include _url_override; Shopify products use /products/<handle>
+    url = raw.get('_url_override') or (f"{competitor['base_url']}/products/{handle}" if handle else None)
 
     product = {
         'source': source_key,
