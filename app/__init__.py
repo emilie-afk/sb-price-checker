@@ -25,4 +25,12 @@ def create_app():
     from .routes import bp
     app.register_blueprint(bp)
 
+    @app.before_request
+    def require_login():
+        from flask import request, session, redirect, url_for
+        if request.endpoint in ('main.login', 'main.logout', 'main.robots', 'static'):
+            return
+        if not session.get('authenticated'):
+            return redirect(url_for('main.login'))
+
     return app
