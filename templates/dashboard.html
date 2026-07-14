@@ -175,6 +175,9 @@
               {% else %}bg-red-100 text-red-700{% endif %}">
               {{ log[2] }}
             </span>
+            {% if log[2] != 'success' and log[3] %}
+            <p class="text-xs text-red-400 mt-1 max-w-xs" title="{{ log[3] }}">{{ log[3][:80] }}{% if log[3]|length > 80 %}…{% endif %}</p>
+            {% endif %}
           </td>
           <td class="py-2 text-right text-gray-600">{{ log[1] }}</td>
         </tr>
