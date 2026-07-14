@@ -242,6 +242,22 @@ def collect():
     return jsonify({'success': True, 'task_id': task_id})
 
 
+@bp.route('/collect/<source>', methods=['POST'])
+def collect_source(source):
+    """Run collection for a single competitor source."""
+    from .scraper import COMPETITORS
+    if source not in COMPETITORS:
+        return jsonify({'success': False, 'error': f'Unknown source: {source}'}), 400
+
+    def _run_one(db, src):
+        from .scraper import run_collection_one
+        return run_collection_one(db, src)
+
+    task_id = uuid.uuid4().hex[:8]
+    _run_in_background(task_id, _run_one, source)
+    return jsonify({'success': True, 'task_id': task_id})
+
+
 @bp.route('/match', methods=['POST'])
 def run_match():
     task_id = uuid.uuid4().hex[:8]

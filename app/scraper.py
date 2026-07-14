@@ -36,12 +36,20 @@ def _strip_html(html):
     return re.sub(r'\s+', ' ', text).strip()[:500]
 
 
-def fetch_shopify_products(url_template):
-    """Paginate through a Shopify products.json endpoint. Returns list of raw products."""
+def fetch_shopify_products(url_template, since=None):
+    """Paginate through a Shopify products.json endpoint. Returns list of raw products.
+
+    If `since` is an ISO timestamp string, appends updated_at_min so Shopify
+    only returns products modified after that time — drastically reducing
+    pages fetched on subsequent runs.
+    """
     products = []
     page = 1
+    since_param = f'&updated_at_min={since}' if since else ''
+    if since:
+        print(f'[shopify] incremental fetch — only products updated since {since[:19]}', flush=True)
     while True:
-        url = url_template.format(page=page)
+        url = url_template.format(page=page) + since_param
         try:
             resp = requests.get(url, headers=HEADERS, timeout=30)
             if resp.status_code != 200:
@@ -50,6 +58,7 @@ def fetch_shopify_products(url_template):
             if not batch:
                 break
             products.extend(batch)
+            print(f'[shopify] page {page}: {len(batch)} products (total {len(products)})', flush=True)
             page += 1
             time.sleep(1)
         except Exception:
@@ -57,129 +66,154 @@ def fetch_shopify_products(url_template):
     return products
 
 
+def _parse_mcg_page(html, page, MCG_BASE):
+    """Parse a single MCG HTML page, returning (products_list, found_any)."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, 'html.parser')
+    products = []
+
+    cards = soup.select('article.card')
+    if not cards:
+        cards = soup.select('[data-product-id]') or soup.select('.productGrid li') or soup.select('.product-item')
+
+    for card in cards:
+        # Title: h3.card-title text (a is a sibling of h3, not child of it)
+        h3 = card.select_one('h3.card-title') or card.select_one('h3')
+        title = h3.get_text(strip=True) if h3 else ''
+
+        # Link: first plain <a> in the card
+        link = card.select_one('a[href]')
+        if not link:
+            continue
+        href = link.get('href', '')
+        if not href.startswith('http'):
+            href = MCG_BASE + href
+        if any(x in href for x in ['/explore-all', '/categories', 'javascript', '#']):
+            continue
+        slug = href.rstrip('/').split('/')[-1]
+
+        if not title:
+            title = link.get_text(strip=True)
+        if not title:
+            continue
+
+        # Price
+        price_el = (card.select_one('.price--withoutTax') or
+                    card.select_one('.price') or
+                    card.select_one('[data-product-price]'))
+        price_text = price_el.get_text(strip=True) if price_el else ''
+        price_match = re.search(r'[\d]+\.?\d*', price_text.replace(',', ''))
+        price = float(price_match.group()) if price_match else 0.0
+        is_from = 'from' in price_text.lower()
+
+        if price == 0:
+            continue
+
+        products.append({
+            'id': slug, 'title': title, 'handle': slug,
+            'product_type': '', 'body_html': '', 'images': [],
+            'variants': [{'id': f'{slug}-default',
+                          'title': 'From' if is_from else 'Default',
+                          'price': str(price), 'available': True, 'sku': ''}],
+            '_url_override': href,
+        })
+
+    # Pagination
+    next_link = (soup.select_one('.pagination-item--next a') or
+                 soup.select_one('a[aria-label="Next"]') or
+                 soup.select_one('.pagination-next a'))
+    has_next = bool(next_link)
+    return products, has_next
+
+
 def fetch_mcg_bigcommerce():
     """Fetch MCG products via BigCommerce HTML scraping.
-    Uses curl-cffi for Chrome TLS fingerprint to bypass Cloudflare bot protection.
-    Returns list of standardized product dicts compatible with parse_product."""
-    try:
-        from curl_cffi import requests as cf_requests
-        from bs4 import BeautifulSoup
-    except ImportError as e:
-        raise RuntimeError(f'curl-cffi/beautifulsoup4 not installed: {e}')
+    Tries curl-cffi (Chrome TLS fingerprint) first, then falls back to requests.
+    """
+    from bs4 import BeautifulSoup
 
     MCG_BASE = 'https://mountaincrestgardens.com'
     raw_products = []
     page = 1
-    last_error = None
+
+    # Try curl_cffi with Chrome impersonation first; fall back to plain requests
+    def _fetch_page(url):
+        try:
+            from curl_cffi import requests as cf_requests
+            resp = cf_requests.get(
+                url,
+                impersonate='chrome131',
+                timeout=45,
+                headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                }
+            )
+            if resp.status_code == 200 and len(resp.text) > 10000:
+                return resp.status_code, resp.text
+        except Exception as e:
+            print(f'[mcg] curl_cffi failed: {e}', flush=True)
+
+        # Fallback: plain requests with browser headers
+        resp = requests.get(url, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Upgrade-Insecure-Requests': '1',
+        })
+        return resp.status_code, resp.text
 
     while True:
         url = f'{MCG_BASE}/explore-all/?page={page}'
         try:
-            resp = cf_requests.get(
-                url,
-                impersonate='chrome124',
-                timeout=45,
-                headers={
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                }
-            )
+            status, html = _fetch_page(url)
 
-            if resp.status_code == 403:
-                raise RuntimeError(f'MCG blocked by Cloudflare (403) on page {page}. curl-cffi impersonation failed.')
-            if resp.status_code != 200:
-                raise RuntimeError(f'MCG returned HTTP {resp.status_code} on page {page}')
+            if status == 403:
+                raise RuntimeError(f'MCG blocked (403) on page {page} — Cloudflare is blocking Render\'s server IP')
+            if status != 200:
+                raise RuntimeError(f'MCG returned HTTP {status} on page {page}')
 
-            soup = BeautifulSoup(resp.text, 'html.parser')
+            soup_title = BeautifulSoup(html, 'html.parser').find('title')
+            page_title = soup_title.get_text() if soup_title else 'unknown'
 
-            # Detect Cloudflare challenge page
-            if 'challenge' in resp.text.lower() and len(resp.text) < 5000:
-                raise RuntimeError('MCG returned Cloudflare challenge page — bot detection triggered')
+            if 'challenge' in html.lower() and len(html) < 8000:
+                raise RuntimeError(f'MCG returned Cloudflare challenge on page {page} (title: "{page_title}")')
 
-            # BigCommerce Stencil: products are article.card inside .productGrid
-            cards = soup.select('article.card')
-            if not cards:
-                cards = soup.select('[data-product-id]')
-            if not cards:
-                cards = soup.select('.productGrid li') or soup.select('.product-item')
-            if not cards:
-                # Log what we actually got for debugging
-                title_tag = soup.find('title')
-                page_title = title_tag.get_text() if title_tag else 'unknown'
-                raise RuntimeError(f'No product cards found on MCG page {page}. Page title: "{page_title}". HTML snippet: {resp.text[:500]}')
+            page_products, has_next = _parse_mcg_page(html, page, MCG_BASE)
 
-            found_any = False
-            for card in cards:
-                link = (card.select_one('.card-title a') or
-                        card.select_one('h3 a') or
-                        card.select_one('h4 a') or
-                        card.select_one('a[href*="/"]'))
-                if not link:
-                    continue
-
-                title = link.get_text(strip=True)
-                href = link.get('href', '')
-                if not href or href.startswith('#'):
-                    continue
-                if not href.startswith('http'):
-                    href = MCG_BASE + href
-
-                if any(x in href for x in ['/explore-all', '/categories', 'javascript']):
-                    continue
-
-                slug = href.rstrip('/').split('/')[-1]
-
-                price_el = (card.select_one('.price--withoutTax') or
-                            card.select_one('.price') or
-                            card.select_one('[data-product-price]'))
-                price_text = price_el.get_text(strip=True) if price_el else ''
-                price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
-                price = float(price_match.group().replace(',', '')) if price_match else 0.0
-                is_from = 'from' in price_text.lower()
-
-                if not title or price == 0:
-                    continue
-
-                raw_products.append({
-                    'id': slug,
-                    'title': title,
-                    'handle': slug,
-                    'product_type': '',
-                    'body_html': '',
-                    'images': [],
-                    'variants': [{
-                        'id': f'{slug}-default',
-                        'title': 'From' if is_from else 'Default',
-                        'price': str(price),
-                        'available': True,
-                        'sku': '',
-                    }],
-                    '_url_override': href,
-                })
-                found_any = True
-
-            if not found_any:
+            if not page_products:
+                print(f'[mcg] page {page}: 0 products parsed. title="{page_title}" html_len={len(html)}', flush=True)
                 break
 
-            next_link = (soup.select_one('.pagination-item--next a') or
-                         soup.select_one('a[aria-label="Next"]') or
-                         soup.select_one('.pagination-next a'))
-            if not next_link:
+            raw_products.extend(page_products)
+            print(f'[mcg] page {page}: {len(page_products)} products (total {len(raw_products)})', flush=True)
+
+            if not has_next:
                 break
 
             page += 1
             time.sleep(1.5)
 
         except RuntimeError:
-            raise  # Surface these as real errors
+            raise
         except Exception as e:
             raise RuntimeError(f'MCG scraping failed on page {page}: {e}')
 
     return raw_products
+
+
+def run_collection_one(db_conn, source_key):
+    """Run incremental collection for a single competitor source."""
+    return run_collection(db_conn, sources=[source_key])
 
 
 def sync_sb_products(db_conn):
@@ -189,13 +223,23 @@ def sync_sb_products(db_conn):
     Subsequent runs: only updates prices that changed, inserts genuinely new products/variants.
     """
     cursor = db_conn.cursor()
-    raw_products = fetch_shopify_products(SB_URL_TEMPLATE)
+
+    # Use last sync time so Shopify only returns products updated since then
+    row = cursor.execute(
+        "SELECT MAX(synced_at) FROM sb_products WHERE synced_at IS NOT NULL"
+    ).fetchone()
+    last_sync = row[0] if row and row[0] else None
+
+    raw_products = fetch_shopify_products(SB_URL_TEMPLATE, since=last_sync)
     now = datetime.utcnow().isoformat()
     new_products = 0
     price_changes = 0
     errors = 0
 
-    print(f"[sync_sb] fetched {len(raw_products)} products from succulentsbox.com", flush=True)
+    if last_sync:
+        print(f"[sync_sb] {len(raw_products)} products changed since {last_sync[:19]}", flush=True)
+    else:
+        print(f"[sync_sb] first run — fetched {len(raw_products)} products from succulentsbox.com", flush=True)
 
     for i, raw in enumerate(raw_products):
         try:
@@ -290,12 +334,12 @@ def sync_sb_products(db_conn):
             'price_changes': price_changes, 'errors': errors}
 
 
-def fetch_products(source_key):
-    """Fetch all products from a competitor."""
+def fetch_products(source_key, since=None):
+    """Fetch products from a competitor. `since` is an ISO timestamp for incremental Shopify fetches."""
     competitor = COMPETITORS[source_key]
 
     if competitor.get('platform') == 'bigcommerce':
-        return fetch_mcg_bigcommerce()
+        return fetch_mcg_bigcommerce()  # BigCommerce HTML scrape — no since support
 
     if 'url_template' in competitor:
         url_template = competitor['url_template']
@@ -304,7 +348,7 @@ def fetch_products(source_key):
             f"{competitor['base_url']}/collections/{competitor['collection']}"
             f"/products.json?limit=250&page={{page}}"
         )
-    return fetch_shopify_products(url_template)
+    return fetch_shopify_products(url_template, since=since)
 
 
 def parse_product(raw, source_key):
@@ -344,8 +388,8 @@ def parse_product(raw, source_key):
     return product, variants
 
 
-def run_collection(db_conn):
-    """Run incremental collection for all competitors.
+def run_collection(db_conn, sources=None):
+    """Run incremental collection for all (or specified) competitors.
 
     First run: inserts all products and variants, records initial price snapshots.
     Subsequent runs: only updates prices that changed, inserts genuinely new products/variants.
@@ -353,11 +397,21 @@ def run_collection(db_conn):
     results = {}
     cursor = db_conn.cursor()
 
-    for source_key in COMPETITORS:
+    for source_key in (sources or COMPETITORS):
         print(f"[collect] starting {source_key}", flush=True)
         try:
-            raw_products = fetch_products(source_key)
-            print(f"[collect] {source_key}: fetched {len(raw_products)} products from web", flush=True)
+            # For Shopify sources, fetch only products updated since last successful run
+            last_row = cursor.execute(
+                "SELECT MAX(ran_at) FROM collection_log WHERE source=%s AND status='success'",
+                (source_key,)
+            ).fetchone()
+            last_collected = last_row[0] if last_row and last_row[0] else None
+
+            raw_products = fetch_products(source_key, since=last_collected)
+            if last_collected and COMPETITORS[source_key].get('platform') != 'bigcommerce':
+                print(f"[collect] {source_key}: {len(raw_products)} products changed since {last_collected[:19]}", flush=True)
+            else:
+                print(f"[collect] {source_key}: fetched {len(raw_products)} products from web", flush=True)
             now = datetime.utcnow().isoformat()
             new_products = 0
             price_changes = 0
