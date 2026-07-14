@@ -175,6 +175,10 @@
               {% else %}bg-red-100 text-red-700{% endif %}">
               {{ log[2] }}
             </span>
+            {% if log[2] != 'success' %}
+            <button onclick="retrySource('{{ log[0] }}')"
+              class="text-xs text-brand-600 hover:underline mt-1 block">↺ Retry</button>
+            {% endif %}
             {% if log[2] != 'success' and log[3] %}
             <p class="text-xs text-red-400 mt-1 max-w-xs" title="{{ log[3] }}">{{ log[3][:80] }}{% if log[3]|length > 80 %}…{% endif %}</p>
             {% endif %}
@@ -266,6 +270,36 @@ async function runAction(endpoint, btnId, msgId) {
     btn.disabled = false;
     spinner.classList.add('hidden');
   }
+}
+
+async function retrySource(source) {
+  const label = {planet_desert:'Planet Desert', mountain_crest:'Mtn Crest', house_plant_shop:'House Plant Shop'}[source] || source;
+  const resp = await fetch('/collect/' + source, { method: 'POST' });
+  const start = await resp.json();
+  if (!start.success) { alert('Error: ' + start.error); return; }
+  const taskId = start.task_id;
+  // Show a small toast
+  const toast = document.createElement('div');
+  toast.className = 'fixed bottom-4 right-4 bg-gray-800 text-white text-sm px-4 py-2 rounded shadow z-50';
+  toast.textContent = `Retrying ${label}…`;
+  document.body.appendChild(toast);
+  const poll = setInterval(async () => {
+    const r = await fetch('/task-status/' + taskId);
+    const task = await r.json();
+    if (task.status === 'done') {
+      clearInterval(poll);
+      const res = task.result || {};
+      const src = Object.keys(res)[0];
+      toast.textContent = res[src]?.status === 'success'
+        ? `${label}: ${res[src].products} products ✓`
+        : `${label}: ${res[src]?.message || 'error'}`;
+      setTimeout(() => { toast.remove(); location.reload(); }, 3000);
+    } else if (task.status === 'error') {
+      clearInterval(poll);
+      toast.textContent = `${label} error: ${task.error}`;
+      setTimeout(() => toast.remove(), 5000);
+    }
+  }, 3000);
 }
 </script>
 {% endblock %}
