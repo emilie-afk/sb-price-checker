@@ -180,6 +180,16 @@ _TABLES = [
         ran_at         TEXT
     )
     ''',
+    '''
+    CREATE TABLE IF NOT EXISTS scrape_queue (
+        id           SERIAL PRIMARY KEY,
+        source       TEXT NOT NULL,
+        status       TEXT DEFAULT 'pending',
+        requested_at TEXT,
+        completed_at TEXT,
+        message      TEXT
+    )
+    ''',
 ]
 
 

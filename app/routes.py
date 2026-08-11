@@ -94,6 +94,15 @@ def dashboard():
         FROM collection_log ORDER BY ran_at DESC LIMIT 6
     ''').fetchall()
 
+    mcg_queue = db.execute(
+        "SELECT status, message, completed_at FROM scrape_queue WHERE source='mountain_crest' ORDER BY requested_at DESC LIMIT 1"
+    ).fetchone()
+
+    # Distinct plant types for the matching filter
+    plant_types = [r[0] for r in db.execute(
+        "SELECT DISTINCT product_type FROM sb_products WHERE product_type IS NOT NULL AND product_type != '' ORDER BY product_type"
+    ).fetchall()]
+
     return render_template('dashboard.html',
         sb_count=sb_count,
         sb_synced=sb_synced,
@@ -103,7 +112,9 @@ def dashboard():
         matches_accepted=matches_accepted,
         above_market=above, near_market=near, below_market=below,
         by_source=by_source,
-        recent_log=recent_log)
+        recent_log=recent_log,
+        mcg_queue=mcg_queue,
+        plant_types=plant_types)
 
 
 @bp.route('/products')
@@ -237,8 +248,14 @@ def sync_sb():
 
 @bp.route('/collect', methods=['POST'])
 def collect():
+    data = request.get_json(silent=True) or {}
+    sources = data.get('sources') or None  # None = all competitors
+
+    def _run(db, src):
+        return run_collection(db, sources=src)
+
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, run_collection)
+    _run_in_background(task_id, _run, sources)
     return jsonify({'success': True, 'task_id': task_id})
 
 
@@ -258,8 +275,43 @@ def collect_source(source):
     return jsonify({'success': True, 'task_id': task_id})
 
 
+@bp.route('/trigger-mcg', methods=['POST'])
+def trigger_mcg():
+    db = get_db()
+    existing = db.execute(
+        "SELECT id, status FROM scrape_queue WHERE source='mountain_crest' AND status IN ('pending','running') LIMIT 1"
+    ).fetchone()
+    if existing:
+        return jsonify({'success': False, 'error': f'Already {existing[1]} — check your Terminal'})
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        "INSERT INTO scrape_queue (source, status, requested_at) VALUES (%s, %s, %s)",
+        ('mountain_crest', 'pending', now)
+    )
+    db.commit()
+    return jsonify({'success': True})
+
+
+@bp.route('/mcg-status')
+def mcg_status():
+    db = get_db()
+    row = db.execute(
+        "SELECT status, message, completed_at FROM scrape_queue WHERE source='mountain_crest' ORDER BY requested_at DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return jsonify({'status': 'idle'})
+    return jsonify({'status': row[0], 'message': row[1], 'completed_at': row[2]})
+
+
 @bp.route('/match', methods=['POST'])
 def run_match():
+    data = request.get_json(silent=True) or {}
+    plant_types = data.get('plant_types') or None  # None = all types
+    sources = data.get('sources') or None           # None = all competitors
+
+    def _run(db, pt, src):
+        return run_matching(db, plant_types=pt, sources=src)
+
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, run_matching)
+    _run_in_background(task_id, _run, plant_types, sources)
     return jsonify({'success': True, 'task_id': task_id})
