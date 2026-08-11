@@ -106,20 +106,65 @@ Rules:
                 for _ in candidates]
 
 
-def run_matching(db_conn):
-    """Match all tracked SB products against collected competitor products."""
+def run_matching(db_conn, plant_types=None, sources=None):
+    """Match SB products against competitor products.
+
+    plant_types: list of product_type strings to include (None = all)
+    sources:     list of competitor source keys to include (None = all)
+    """
+    from collections import defaultdict
     cursor = db_conn.cursor()
 
     cursor.execute('SELECT id, title, product_type FROM sb_products WHERE tracked=1')
     sb_products = cursor.fetchall()
 
-    # Pre-load all existing matches to skip per-candidate SELECT checks
+    # Filter by plant type if specified
+    if plant_types:
+        pt_lower = {pt.lower() for pt in plant_types}
+        sb_products = [p for p in sb_products if (p[2] or '').lower() in pt_lower]
+        print(f'[match] Filtered to plant types {plant_types}: {len(sb_products)} products', flush=True)
+
+    # Pre-load all existing matches
     cursor.execute('SELECT sb_product_id, competitor_variant_id FROM matches')
     existing_matches = set((r[0], r[1]) for r in cursor.fetchall())
-    print(f'[match] {len(sb_products)} SB products, {len(existing_matches)} existing matches', flush=True)
+
+    # Load competitor variants into memory — filtered by source if specified
+    if sources:
+        placeholders = ','.join(['%s'] * len(sources))
+        cursor.execute(f'''
+            SELECT cp.source, cp.title, cp.product_type, cp.description, cp.url,
+                   cv.id, cv.variant_title, cv.price, cv.available
+            FROM competitor_products cp
+            JOIN competitor_variants cv ON cv.product_id = cp.id
+            WHERE cv.price > 0 AND cv.available = 1
+            AND cp.source IN ({placeholders})
+        ''', sources)
+        print(f'[match] Filtering competitors to: {sources}', flush=True)
+    else:
+        cursor.execute('''
+            SELECT cp.source, cp.title, cp.product_type, cp.description, cp.url,
+                   cv.id, cv.variant_title, cv.price, cv.available
+            FROM competitor_products cp
+            JOIN competitor_variants cv ON cv.product_id = cp.id
+            WHERE cv.price > 0 AND cv.available = 1
+        ''')
+    all_variants = cursor.fetchall()
+
+    # Build keyword index in Python: word -> [variant_row, ...]
+    keyword_index = defaultdict(list)
+    stop = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'for', 'with', 'plant',
+            'live', 'inch', 'pot', 'set', 'gift', 'card', 'pack', 'wrapped'}
+    for row in all_variants:
+        title_words = re.findall(r"[a-zA-Z']+", row[1].lower())
+        for word in title_words:
+            if len(word) >= 4 and word not in stop:
+                keyword_index[word].append(row)
+
+    print(f'[match] {len(sb_products)} SB products, {len(existing_matches)} existing matches, '
+          f'{len(all_variants)} competitor variants loaded into memory', flush=True)
 
     summary = {'matched': 0, 'skipped': 0, 'errors': 0}
-    pending_inserts = []  # batch up inserts, commit every 20
+    pending_inserts = []
 
     for i, sb_row in enumerate(sb_products):
         sb_id = sb_row[0]
@@ -140,48 +185,30 @@ def run_matching(db_conn):
         ).fetchall()
         sb_variants = [v._asdict() for v in sb_variants_rows]
 
-        # Find candidate competitor variants by keyword search
+        # Find candidates using in-memory keyword index (no DB queries)
         search_terms = _keyword_search_terms(sb_title)
-        candidate_ids = set()
+        seen_variant_ids = set()
+        candidates_raw = []
         for term in search_terms[:4]:
-            cursor.execute('''
-                SELECT cv.id
-                FROM competitor_products cp
-                JOIN competitor_variants cv ON cv.product_id = cp.id
-                WHERE LOWER(cp.title) LIKE LOWER(%s)
-                AND cv.price > 0 AND cv.available = 1
-            ''', (f'%{term}%',))
-            for row in cursor.fetchall():
-                candidate_ids.add(row[0])
+            for row in keyword_index.get(term, []):
+                vid = row[5]  # cv.id
+                if vid not in seen_variant_ids and (sb_id, vid) not in existing_matches:
+                    seen_variant_ids.add(vid)
+                    candidates_raw.append(row)
 
-        if not candidate_ids:
+        if not candidates_raw:
             continue
-
-        # Filter out already-matched candidates
-        new_candidate_ids = [cid for cid in candidate_ids
-                             if (sb_id, cid) not in existing_matches]
-        if not new_candidate_ids:
-            summary['skipped'] += len(candidate_ids)
-            continue
-
-        placeholders = ','.join(['%s'] * len(new_candidate_ids))
-        cursor.execute(f'''
-            SELECT cp.id, cp.source, cp.title, cp.product_type, cp.description, cp.url,
-                   cv.id, cv.variant_title, cv.price, cv.available
-            FROM competitor_products cp
-            JOIN competitor_variants cv ON cv.product_id = cp.id
-            WHERE cv.id IN ({placeholders})
-        ''', new_candidate_ids)
-        candidates_raw = cursor.fetchall()
 
         if not candidates_raw:
             continue
 
         # Build candidate dicts for the batch Claude call (max 20 per call)
+        # Row: source[0], title[1], product_type[2], description[3], url[4],
+        #      cv.id[5], variant_title[6], price[7], available[8]
         candidates = [{
-            'id': c[6], 'source': c[1], 'title': c[2],
-            'product_type': c[3], 'description': c[4],
-            'variant_title': c[7], 'price': c[8], 'available': c[9],
+            'id': c[5], 'source': c[0], 'title': c[1],
+            'product_type': c[2], 'description': c[3],
+            'variant_title': c[6], 'price': c[7], 'available': c[8],
         } for c in candidates_raw][:20]
 
         try:
