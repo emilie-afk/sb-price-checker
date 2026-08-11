@@ -22,6 +22,12 @@ COMPETITORS = {
         'url_template': 'https://houseplantshop.com/products.json?limit=250&page={page}',
         'platform': 'shopify',
     },
+    'the_sill': {
+        'name': 'The Sill',
+        'base_url': 'https://www.thesill.com',
+        'url_template': 'https://www.thesill.com/products.json?limit=250&page={page}',
+        'platform': 'shopify',
+    },
 }
 
 SB_URL_TEMPLATE = 'https://succulentsbox.com/products.json?limit=250&page={page}'
