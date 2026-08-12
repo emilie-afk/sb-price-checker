@@ -28,6 +28,11 @@ COMPETITORS = {
         'url_template': 'https://www.thesill.com/products.json?limit=250&page={page}',
         'platform': 'shopify',
     },
+    'bloomscape': {
+        'name': 'Bloomscape',
+        'base_url': 'https://bloomscape.com',
+        'platform': 'manual',  # can't auto-scrape; manual entry only
+    },
 }
 
 SB_URL_TEMPLATE = 'https://succulentsbox.com/products.json?limit=250&page={page}'
