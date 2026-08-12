@@ -163,6 +163,93 @@ def product_detail(product_id):
                            product=product, sb_variants=sb_variants, matches=matches)
 
 
+@bp.route('/products/<int:product_id>/manual-match', methods=['POST'])
+def manual_match(product_id):
+    import re as _re
+    data = request.get_json(silent=True) or {}
+    source = data.get('source', '').strip()
+    comp_title = data.get('title', '').strip()
+    variant_title = data.get('variant_title', '').strip() or 'Default'
+    try:
+        price = float(data.get('price', 0))
+    except (ValueError, TypeError):
+        price = 0.0
+    url = data.get('url', '').strip() or None
+
+    if not source or not comp_title or price <= 0:
+        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+
+    # Stable external_id so re-entering same product doesn't duplicate
+    ext_id = 'manual-' + _re.sub(r'[^a-z0-9]+', '-', comp_title.lower()).strip('-')
+
+    # Upsert competitor product
+    row = db.execute('''
+        INSERT INTO competitor_products (source, external_id, title, url, collected_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT(source, external_id) DO UPDATE SET
+            title=EXCLUDED.title, url=COALESCE(EXCLUDED.url, competitor_products.url),
+            collected_at=EXCLUDED.collected_at
+        RETURNING id
+    ''', (source, ext_id, comp_title, url, now)).fetchone()
+    comp_product_id = row[0]
+
+    # Upsert variant
+    ext_variant_id = f'{ext_id}-{_re.sub(r"[^a-z0-9]+", "-", variant_title.lower())}'
+    vrow = db.execute('''
+        INSERT INTO competitor_variants (product_id, external_variant_id, variant_title, price, available, collected_at)
+        VALUES (%s, %s, %s, %s, 1, %s)
+        ON CONFLICT DO NOTHING
+        RETURNING id
+    ''', (comp_product_id, ext_variant_id, variant_title, price, now)).fetchone()
+
+    if not vrow:
+        # Already exists — update price
+        vrow = db.execute(
+            'SELECT id FROM competitor_variants WHERE external_variant_id=%s', (ext_variant_id,)
+        ).fetchone()
+        db.execute('UPDATE competitor_variants SET price=%s, collected_at=%s WHERE id=%s',
+                   (price, now, vrow[0]))
+
+    variant_id = vrow[0]
+
+    # Record price snapshot
+    db.execute('INSERT INTO price_snapshots (variant_id, price, available, captured_at) VALUES (%s,%s,1,%s)',
+               (variant_id, price, now))
+
+    # Calculate price diff vs SB
+    sb_variants = db.execute(
+        'SELECT price FROM sb_variants WHERE product_id=%s AND price>0 AND available=1 ORDER BY price ASC',
+        (product_id,)
+    ).fetchall()
+    sb_price = sb_variants[0][0] if sb_variants else None
+    price_diff_pct = ((price - sb_price) / sb_price * 100) if sb_price else None
+
+    if price_diff_pct is None:
+        market_pos = 'unknown'
+    elif price_diff_pct > 10:
+        market_pos = 'above_market'
+    elif price_diff_pct < -10:
+        market_pos = 'below_market'
+    else:
+        market_pos = 'near_market'
+
+    # Upsert match (replace if same variant already matched)
+    db.execute('''
+        INSERT INTO matches
+          (sb_product_id, competitor_variant_id, relationship, confidence, status,
+           ai_explanation, price_diff_pct, market_position, created_at)
+        VALUES (%s, %s, 'comparable', 95, 'accepted', 'Manually added', %s, %s, %s)
+        ON CONFLICT DO NOTHING
+    ''', (product_id, variant_id, price_diff_pct, market_pos, now))
+    db.commit()
+
+    return jsonify({'success': True, 'market_position': market_pos,
+                    'price_diff_pct': round(price_diff_pct, 1) if price_diff_pct is not None else None})
+
+
 @bp.route('/matches/<int:match_id>/accept', methods=['POST'])
 def accept_match(match_id):
     db = get_db()
