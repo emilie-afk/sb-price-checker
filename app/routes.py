@@ -98,10 +98,22 @@ def dashboard():
         "SELECT status, message, completed_at FROM scrape_queue WHERE source='mountain_crest' ORDER BY requested_at DESC LIMIT 1"
     ).fetchone()
 
-    # Distinct plant types for the matching filter
-    plant_types = [r[0] for r in db.execute(
+    # Distinct plant types — split into plants vs non-plants
+    _non_plant_keywords = {
+        'accessory', 'accessories', 'gift', 'card', 'candle', 'bookmark',
+        'calendar', 'organizer', 'planner', 'sticker', 'notepad', 'soap',
+        'tray', 'tool', 'supply', 'supplies', 'fertilizer', 'subscription',
+        'coloring', 'book', 'greeting', 'custom', 'pot', 'pots', 'planter',
+    }
+    def _is_plant(pt):
+        pt_lower = pt.lower()
+        return not any(kw in pt_lower for kw in _non_plant_keywords)
+
+    all_types = [r[0] for r in db.execute(
         "SELECT DISTINCT product_type FROM sb_products WHERE product_type IS NOT NULL AND product_type != '' ORDER BY product_type"
     ).fetchall()]
+    plant_types = [pt for pt in all_types if _is_plant(pt)]
+    non_plant_types = [pt for pt in all_types if not _is_plant(pt)]
 
     return render_template('dashboard.html',
         sb_count=sb_count,
@@ -114,13 +126,16 @@ def dashboard():
         by_source=by_source,
         recent_log=recent_log,
         mcg_queue=mcg_queue,
-        plant_types=plant_types)
+        plant_types=plant_types,
+        non_plant_types=non_plant_types)
 
 
 @bp.route('/products')
 def products():
     db = get_db()
-    rows = db.execute('''
+    position = request.args.get('position')  # e.g. below_market, above_market, near_market
+
+    base_query = '''
         SELECT p.id, p.title, p.product_type, p.price_min, p.price_max,
                COUNT(CASE WHEN m.status='accepted' THEN 1 END) as accepted,
                COUNT(CASE WHEN m.status='pending' THEN 1 END) as pending,
@@ -130,9 +145,17 @@ def products():
         LEFT JOIN matches m ON m.sb_product_id = p.id
         WHERE p.tracked=1
         GROUP BY p.id
-        ORDER BY p.title ASC
-    ''').fetchall()
-    return render_template('products.html', products=rows)
+    '''
+    if position:
+        rows = db.execute(
+            base_query + " HAVING MAX(CASE WHEN m.status='accepted' THEN m.market_position END) = %s"
+                       + " ORDER BY AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) ASC",
+            (position,)
+        ).fetchall()
+    else:
+        rows = db.execute(base_query + ' ORDER BY p.title ASC').fetchall()
+
+    return render_template('products.html', products=rows, position_filter=position)
 
 
 @bp.route('/products/<int:product_id>')
@@ -290,7 +313,13 @@ def review_queue():
 @bp.route('/export.csv')
 def export_csv():
     db = get_db()
-    rows = db.execute('''
+    position = request.args.get('position')
+    where = "WHERE m.status = 'accepted'"
+    params = []
+    if position:
+        where += " AND m.market_position = %s"
+        params.append(position)
+    rows = db.execute(f'''
         SELECT p.title as sb_title, p.product_type, p.price_min, p.price_max,
                cp.source, cp.title as comp_title, cp.url,
                cv.variant_title, cv.price,
@@ -300,9 +329,9 @@ def export_csv():
         JOIN sb_products p ON p.id = m.sb_product_id
         JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
         JOIN competitor_products cp ON cp.id = cv.product_id
-        WHERE m.status = 'accepted'
-        ORDER BY p.title ASC
-    ''').fetchall()
+        {where}
+        ORDER BY m.price_diff_pct ASC
+    ''', params or ()).fetchall()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -320,9 +349,12 @@ def export_csv():
             row[10], row[11], row[12], row[13], row[14]
         ])
 
+    filename = f'sb_pricier.csv' if position == 'below_market' else \
+               f'sb_cheaper.csv' if position == 'above_market' else \
+               f'near_market.csv' if position == 'near_market' else 'price_comparison.csv'
     response = make_response(output.getvalue())
     response.headers['Content-Type'] = 'text/csv'
-    response.headers['Content-Disposition'] = 'attachment; filename=price_comparison.csv'
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
     return response
 
 

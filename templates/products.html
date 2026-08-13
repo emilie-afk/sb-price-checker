@@ -2,13 +2,41 @@
 {% block title %}Products{% endblock %}
 
 {% block content %}
-<div class="mb-6 flex items-center justify-between">
+<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
   <div>
-    <h1 class="text-3xl font-bold text-gray-900">Your Plants</h1>
-    <p class="text-gray-500 mt-1">{{ products|length }} products — click column headers to sort</p>
+    <div class="flex items-center gap-3">
+      <h1 class="text-3xl font-bold text-gray-900">Your Plants</h1>
+      {% if position_filter %}
+      <span class="px-3 py-1 rounded-full text-sm font-semibold
+        {% if position_filter == 'below_market' %}bg-red-100 text-red-700
+        {% elif position_filter == 'above_market' %}bg-green-100 text-green-700
+        {% else %}bg-yellow-100 text-yellow-700{% endif %}">
+        {% if position_filter == 'below_market' %}SB Is Pricier
+        {% elif position_filter == 'above_market' %}SB Is Cheaper
+        {% else %}Near Market{% endif %}
+      </span>
+      <a href="/products" class="text-sm text-gray-400 hover:text-gray-600">✕ Clear filter</a>
+      {% endif %}
+    </div>
+    <p class="text-gray-500 mt-1">{{ products|length }} products
+      {% if position_filter %} matching filter{% endif %}
+      — click column headers to sort</p>
   </div>
-  <input id="searchBox" type="text" placeholder="Search plants…"
-    class="border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-56">
+  <div class="flex items-center gap-3">
+    {% if position_filter %}
+    <a href="/export.csv?position={{ position_filter }}"
+       class="bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+      ↓ Download CSV
+    </a>
+    {% else %}
+    <a href="/export.csv"
+       class="border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+      ↓ Download All
+    </a>
+    {% endif %}
+    <input id="searchBox" type="text" placeholder="Search plants…"
+      class="border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-56">
+  </div>
 </div>
 
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
