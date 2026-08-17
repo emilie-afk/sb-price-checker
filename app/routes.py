@@ -433,10 +433,16 @@ def run_match():
     data = request.get_json(silent=True) or {}
     plant_types = data.get('plant_types') or None  # None = all types
     sources = data.get('sources') or None           # None = all competitors
+    clear_pending = data.get('clear_pending', False)
 
-    def _run(db, pt, src):
+    def _run(db, pt, src, do_clear):
+        if do_clear:
+            cur = db.cursor()
+            cur.execute("DELETE FROM matches WHERE status='pending'")
+            db.commit()
+            print('[match] cleared all pending matches', flush=True)
         return run_matching(db, plant_types=pt, sources=src)
 
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run, plant_types, sources)
+    _run_in_background(task_id, _run, plant_types, sources, clear_pending)
     return jsonify({'success': True, 'task_id': task_id})
