@@ -135,10 +135,10 @@ def products():
     db = get_db()
     position = request.args.get('position')  # e.g. below_market, above_market, near_market
 
+    # Main product rows
     base_query = '''
         SELECT p.id, p.title, p.product_type, p.price_min, p.price_max,
                COUNT(CASE WHEN m.status='accepted' THEN 1 END) as accepted,
-               COUNT(CASE WHEN m.status='pending' THEN 1 END) as pending,
                MAX(CASE WHEN m.status='accepted' THEN m.market_position END) as position,
                AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) as avg_diff
         FROM sb_products p
@@ -155,7 +155,31 @@ def products():
     else:
         rows = db.execute(base_query + ' ORDER BY p.title ASC').fetchall()
 
-    return render_template('products.html', products=rows, position_filter=position)
+    # Per-competitor avg diff for each product
+    source_diffs_rows = db.execute('''
+        SELECT m.sb_product_id, cp.source, AVG(m.price_diff_pct) as avg_diff
+        FROM matches m
+        JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
+        JOIN competitor_products cp ON cp.id = cv.product_id
+        WHERE m.status='accepted' AND m.price_diff_pct IS NOT NULL
+        GROUP BY m.sb_product_id, cp.source
+    ''').fetchall()
+
+    # Build dict: product_id -> [(source, avg_diff), ...]
+    source_diffs = {}
+    source_labels = {
+        'mountain_crest': 'MCG',
+        'planet_desert': 'Planet Desert',
+        'house_plant_shop': 'House Plant Shop',
+        'the_sill': 'The Sill',
+        'bloomscape': 'Bloomscape',
+    }
+    for r in source_diffs_rows:
+        pid, src, diff = r[0], r[1], r[2]
+        source_diffs.setdefault(pid, []).append((source_labels.get(src, src), diff))
+
+    return render_template('products.html', products=rows, position_filter=position,
+                           source_diffs=source_diffs)
 
 
 @bp.route('/products/<int:product_id>')
