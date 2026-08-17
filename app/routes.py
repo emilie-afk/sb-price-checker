@@ -368,13 +368,19 @@ def sync_sb():
 @bp.route('/collect', methods=['POST'])
 def collect():
     data = request.get_json(silent=True) or {}
-    sources = data.get('sources') or None  # None = all competitors
+    sources = data.get('sources') or None       # None = all competitors
+    auto_match = data.get('auto_match', False)  # chain matching after collection
 
-    def _run(db, src):
-        return run_collection(db, sources=src)
+    def _run(db, src, do_match):
+        result = run_collection(db, sources=src)
+        if do_match:
+            print('[collect] collection done — auto-starting AI matching', flush=True)
+            match_result = run_matching(db)
+            result['_matching'] = match_result
+        return result
 
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run, sources)
+    _run_in_background(task_id, _run, sources, auto_match)
     return jsonify({'success': True, 'task_id': task_id})
 
 

@@ -1,36 +1,33 @@
-import os
-import json
 import re
+from collections import defaultdict
 from datetime import datetime
-from anthropic import Anthropic
+from difflib import SequenceMatcher
+from app.plant_names import shares_synonym_group
 
-client = None
+# Words that don't help distinguish plant species
+STOP_WORDS = {
+    'the', 'a', 'an', 'and', 'or', 'of', 'in', 'for', 'with',
+    'plant', 'plants', 'live', 'inch', 'pot', 'set', 'gift', 'card',
+    'pack', 'wrapped', 'size', 'mini', 'large', 'small', 'medium',
+    'indoor', 'outdoor', 'fresh', 'rooted', 'cutting', 'rare',
+    'easy', 'care', 'grow', 'house', 'home', 'garden', 'succulent',
+    'cactus', 'tropical', 'beautiful', 'perfect', 'great', 'each',
+}
 
-
-def get_client():
-    global client
-    if client is None:
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
-        if not api_key:
-            raise ValueError('ANTHROPIC_API_KEY environment variable not set')
-        client = Anthropic(api_key=api_key)
-    return client
-
-
-def _format_sb_prices(sb_variants):
-    parts = [f'{v["variant_title"]}: ${v["price"]:.2f}' for v in sb_variants if v['price'] > 0]
-    return ' | '.join(parts) if parts else 'price unknown'
+# Auto-accept if score >= this; mark pending if >= PENDING_THRESHOLD
+ACCEPT_THRESHOLD = 72
+PENDING_THRESHOLD = 48
 
 
 def _closest_sb_price(sb_variants, comp_variant_title):
     if not sb_variants:
         return None
-    comp_lower = comp_variant_title.lower()
+    comp_lower = (comp_variant_title or '').lower()
     comp_size = re.search(r'(\d+)', comp_lower)
     comp_num = comp_size.group(1) if comp_size else None
     if comp_num:
         for v in sb_variants:
-            if comp_num in v['variant_title']:
+            if comp_num in str(v['variant_title']):
                 return v['price']
     available = [v for v in sb_variants if v.get('available') and v['price'] > 0]
     if available:
@@ -40,79 +37,65 @@ def _closest_sb_price(sb_variants, comp_variant_title):
 
 
 def _keyword_search_terms(title):
-    stop = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'for', 'with', 'plant',
-            'live', 'inch', 'pot', 'set', 'gift', 'card', 'pack', 'wrapped'}
     words = re.findall(r"[a-zA-Z']+", title.lower())
-    return [w for w in words if len(w) >= 4 and w not in stop]
+    return [w for w in words if len(w) >= 4 and w not in STOP_WORDS]
 
 
-def classify_batch(sb_product, sb_variants, candidates):
-    """Classify all competitor candidates for one SB product in a single Claude call.
+def _meaningful_words(title):
+    return {w for w in re.findall(r'[a-z]+', title.lower())
+            if len(w) >= 3 and w not in STOP_WORDS}
 
-    candidates: list of dicts with keys: id, source, title, product_type, description,
-                variant_title, price
-    Returns: list of result dicts in same order, each with relationship/confidence/reasoning/market_position.
+
+def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
+    """Return a 0–100 similarity score for two product titles.
+
+    Combines three signals:
+    1. Synonym lookup  — exact cross-name match (e.g. 'Zebra Plant' == 'Haworthia fasciata')
+    2. Word overlap (Jaccard) — how many meaningful words are shared
+    3. Sequence similarity  — catches partial title matches
     """
-    sb_prices_str = _format_sb_prices(sb_variants)
+    # 1. Synonym lookup — if both titles refer to the same plant, score is high
+    if shares_synonym_group(sb_title, comp_title):
+        return 88  # strong match; will be auto-accepted
 
-    candidates_text = '\n'.join(
-        f'{i+1}. [{c["source"]}] "{c["title"]}" — {c["variant_title"]} at ${c["price"]:.2f}'
-        + (f' ({c["description"][:120]})' if c.get('description') else '')
-        for i, c in enumerate(candidates)
-    )
+    a = re.sub(r'[^a-z0-9 ]', '', sb_title.lower())
+    b = re.sub(r'[^a-z0-9 ]', '', comp_title.lower())
 
-    prompt = f"""SB product: "{sb_product['title']}" (type: {sb_product.get('product_type', 'plant')})
-SB prices: {sb_prices_str}
+    # 2. Sequence ratio
+    seq = SequenceMatcher(None, a, b).ratio()
 
-Classify each competitor product below. Return a JSON array with one object per item, in order.
+    # 3. Jaccard on meaningful words
+    wa = _meaningful_words(sb_title)
+    wb = _meaningful_words(comp_title)
+    union = wa | wb
+    jaccard = len(wa & wb) / len(union) if union else 0
 
-{candidates_text}
+    # Combine: word overlap is the stronger signal for plant names
+    score = (jaccard * 0.65 + seq * 0.35) * 100
 
-Return ONLY a JSON array:
-[
-  {{"relationship":"exact|comparable|category_benchmark|not_comparable","confidence":0-100,"reasoning":"one sentence","market_position":"above_market|near_market|below_market|unknown"}},
-  ...
-]
+    # Small bonus if product types match (e.g. both 'Succulent')
+    if sb_type and comp_type and sb_type.lower() == comp_type.lower():
+        score = min(100, score + 5)
 
-Rules:
-- exact: same species/cultivar, same size range
-- comparable: same plant, different size or slight variety difference
-- category_benchmark: similar plant type but clearly different species
-- not_comparable: different plant, gift card, insurance, accessory, etc.
-- above_market = competitor charges MORE than SB (SB is cheaper)
-- below_market = competitor charges LESS than SB (competitor is cheaper)
-- near_market = within 10% of nearest SB size price"""
+    return round(score)
 
-    try:
-        response = get_client().messages.create(
-            model='claude-haiku-4-5-20251001',
-            max_tokens=150 * len(candidates),
-            system='You are a plant product matcher. Return only valid JSON array, no other text.',
-            messages=[{'role': 'user', 'content': prompt}]
-        )
-        text = response.content[0].text.strip()
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        results = json.loads(match.group() if match else text)
-        if isinstance(results, list) and len(results) == len(candidates):
-            return results
-        # Pad with fallbacks if lengths don't match
-        while len(results) < len(candidates):
-            results.append({'relationship': 'not_comparable', 'confidence': 0,
-                            'reasoning': 'No result returned', 'market_position': 'unknown'})
-        return results[:len(candidates)]
-    except Exception as e:
-        return [{'relationship': 'not_comparable', 'confidence': 0,
-                 'reasoning': f'Classification failed: {e}', 'market_position': 'unknown'}
-                for _ in candidates]
+
+def _determine_relationship(score, sb_variant_title, comp_variant_title):
+    """Decide 'exact' or 'comparable' based on score + size match."""
+    if score >= 85:
+        sb_nums = set(re.findall(r'\d+', sb_variant_title or ''))
+        co_nums = set(re.findall(r'\d+', comp_variant_title or ''))
+        if sb_nums and co_nums and sb_nums & co_nums:
+            return 'exact'
+    return 'comparable'
 
 
 def run_matching(db_conn, plant_types=None, sources=None):
-    """Match SB products against competitor products.
+    """Match SB products against competitor products using Python similarity.
 
     plant_types: list of product_type strings to include (None = all)
     sources:     list of competitor source keys to include (None = all)
     """
-    from collections import defaultdict
     cursor = db_conn.cursor()
 
     cursor.execute('SELECT id, title, product_type FROM sb_products WHERE tracked=1')
@@ -124,15 +107,15 @@ def run_matching(db_conn, plant_types=None, sources=None):
         sb_products = [p for p in sb_products if (p[2] or '').lower() in pt_lower]
         print(f'[match] Filtered to plant types {plant_types}: {len(sb_products)} products', flush=True)
 
-    # Pre-load all existing matches
+    # Pre-load existing matches to avoid duplicates
     cursor.execute('SELECT sb_product_id, competitor_variant_id FROM matches')
     existing_matches = set((r[0], r[1]) for r in cursor.fetchall())
 
-    # Load competitor variants into memory — filtered by source if specified
+    # Load all competitor variants into memory
     if sources:
         placeholders = ','.join(['%s'] * len(sources))
         cursor.execute(f'''
-            SELECT cp.source, cp.title, cp.product_type, cp.description, cp.url,
+            SELECT cp.source, cp.title, cp.product_type, cp.url,
                    cv.id, cv.variant_title, cv.price, cv.available
             FROM competitor_products cp
             JOIN competitor_variants cv ON cv.product_id = cp.id
@@ -142,56 +125,57 @@ def run_matching(db_conn, plant_types=None, sources=None):
         print(f'[match] Filtering competitors to: {sources}', flush=True)
     else:
         cursor.execute('''
-            SELECT cp.source, cp.title, cp.product_type, cp.description, cp.url,
+            SELECT cp.source, cp.title, cp.product_type, cp.url,
                    cv.id, cv.variant_title, cv.price, cv.available
             FROM competitor_products cp
             JOIN competitor_variants cv ON cv.product_id = cp.id
             WHERE cv.price > 0 AND cv.available = 1
         ''')
     all_variants = cursor.fetchall()
+    # cols: source[0] title[1] product_type[2] url[3]
+    #       cv.id[4] variant_title[5] price[6] available[7]
 
-    # Build keyword index in Python: word -> [variant_row, ...]
+    # Build keyword index: word -> [variant_row, ...]
     keyword_index = defaultdict(list)
-    stop = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'for', 'with', 'plant',
-            'live', 'inch', 'pot', 'set', 'gift', 'card', 'pack', 'wrapped'}
     for row in all_variants:
-        title_words = re.findall(r"[a-zA-Z']+", row[1].lower())
-        for word in title_words:
-            if len(word) >= 4 and word not in stop:
+        for word in re.findall(r"[a-zA-Z']+", row[1].lower()):
+            if len(word) >= 4 and word not in STOP_WORDS:
                 keyword_index[word].append(row)
 
     print(f'[match] {len(sb_products)} SB products, {len(existing_matches)} existing matches, '
-          f'{len(all_variants)} competitor variants loaded into memory', flush=True)
+          f'{len(all_variants)} competitor variants in memory', flush=True)
 
-    summary = {'matched': 0, 'skipped': 0, 'errors': 0}
+    summary = {'matched': 0, 'skipped': 0}
     pending_inserts = []
 
     for i, sb_row in enumerate(sb_products):
-        sb_id = sb_row[0]
-        sb_title = sb_row[1]
-        sb_product_type = sb_row[2]
+        sb_id, sb_title, sb_product_type = sb_row[0], sb_row[1], sb_row[2]
 
+        # Skip non-plant products
         skip_types = {'gift cards', 'gift card'}
         if (sb_product_type or '').lower() in skip_types:
             continue
         if any(w in sb_title.lower() for w in ('gift card', 'insurance', 'shipping')):
             continue
 
-        sb_info = {'title': sb_title, 'product_type': sb_product_type or 'plant'}
-
-        sb_variants_rows = cursor.execute(
+        # Load SB variants for price comparison
+        cursor.execute(
             'SELECT variant_title, price, available FROM sb_variants WHERE product_id=%s',
             (sb_id,)
-        ).fetchall()
-        sb_variants = [v._asdict() for v in sb_variants_rows]
+        )
+        sb_variants_rows = cursor.fetchall()
+        sb_variants = [
+            {'variant_title': r[0], 'price': float(r[1] or 0), 'available': r[2]}
+            for r in sb_variants_rows
+        ]
 
-        # Find candidates using in-memory keyword index (no DB queries)
+        # Find candidates via keyword index
         search_terms = _keyword_search_terms(sb_title)
         seen_variant_ids = set()
         candidates_raw = []
         for term in search_terms[:4]:
             for row in keyword_index.get(term, []):
-                vid = row[5]  # cv.id
+                vid = row[4]
                 if vid not in seen_variant_ids and (sb_id, vid) not in existing_matches:
                     seen_variant_ids.add(vid)
                     candidates_raw.append(row)
@@ -199,49 +183,45 @@ def run_matching(db_conn, plant_types=None, sources=None):
         if not candidates_raw:
             continue
 
-        if not candidates_raw:
-            continue
-
-        # Build candidate dicts for the batch Claude call (max 20 per call)
-        # Row: source[0], title[1], product_type[2], description[3], url[4],
-        #      cv.id[5], variant_title[6], price[7], available[8]
-        candidates = [{
-            'id': c[5], 'source': c[0], 'title': c[1],
-            'product_type': c[2], 'description': c[3],
-            'variant_title': c[6], 'price': c[7], 'available': c[8],
-        } for c in candidates_raw][:20]
-
-        try:
-            results = classify_batch(sb_info, sb_variants, candidates)
-        except Exception as e:
-            summary['errors'] += len(candidates)
-            continue
-
         now = datetime.utcnow().isoformat()
-        for c, result in zip(candidates, results):
-            relationship = result.get('relationship', 'not_comparable')
-            confidence = int(result.get('confidence', 0))
-            reasoning = result.get('reasoning', '')
-            market_pos = result.get('market_position', 'unknown')
 
-            if relationship == 'not_comparable' or confidence < 60:
+        # Score each candidate with Python similarity
+        for row in candidates_raw[:30]:
+            score = _score_match(sb_title, row[1], sb_product_type, row[2])
+
+            if score < PENDING_THRESHOLD:
                 summary['skipped'] += 1
                 continue
 
-            status = 'accepted' if confidence >= 90 else 'pending'
-            variant_id = c['id']
-            sb_price = _closest_sb_price(sb_variants, c['variant_title'])
-            price_diff_pct = None
-            if sb_price and sb_price > 0:
-                price_diff_pct = (c['price'] - sb_price) / sb_price * 100
+            status = 'accepted' if score >= ACCEPT_THRESHOLD else 'pending'
+            relationship = _determine_relationship(score, '', row[5])
 
-            pending_inserts.append((sb_id, variant_id, relationship, confidence, status,
-                                    reasoning, price_diff_pct, market_pos, now))
-            existing_matches.add((sb_id, variant_id))
+            comp_price = float(row[6] or 0)
+            sb_price = _closest_sb_price(sb_variants, row[5])
+            price_diff_pct = None
+            if sb_price and sb_price > 0 and comp_price > 0:
+                price_diff_pct = (comp_price - sb_price) / sb_price * 100
+                if price_diff_pct > 10:
+                    market_pos = 'above_market'   # competitor costs more → SB cheaper
+                elif price_diff_pct < -10:
+                    market_pos = 'below_market'   # competitor costs less → SB pricier
+                else:
+                    market_pos = 'near_market'
+            else:
+                market_pos = 'unknown'
+
+            method = 'synonym name match' if score == 88 else f'text similarity score {score}/100'
+            reasoning = f'Matched via {method}'
+
+            pending_inserts.append((
+                sb_id, row[4], relationship, score, status,
+                reasoning, price_diff_pct, market_pos, now
+            ))
+            existing_matches.add((sb_id, row[4]))
             summary['matched'] += 1
 
-            # Commit every 20 inserts
-            if len(pending_inserts) >= 20:
+            # Batch commit every 50 inserts
+            if len(pending_inserts) >= 50:
                 cursor._cur.executemany('''
                     INSERT INTO matches
                     (sb_product_id, competitor_variant_id, relationship, confidence, status,
@@ -251,8 +231,8 @@ def run_matching(db_conn, plant_types=None, sources=None):
                 db_conn.commit()
                 pending_inserts.clear()
 
-        if (i + 1) % 50 == 0:
-            print(f'[match] {i+1}/{len(sb_products)} SB products processed — '
+        if (i + 1) % 100 == 0:
+            print(f'[match] {i+1}/{len(sb_products)} done — '
                   f'matched={summary["matched"]} skipped={summary["skipped"]}', flush=True)
 
     # Final flush

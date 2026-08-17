@@ -113,16 +113,22 @@
       </div>
     </div>
 
-    <button id="collectBtn" onclick="runCollect()"
-      class="bg-brand-600 hover:bg-brand-700 text-white font-semibold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-2">
-      <span id="collectSpinner" class="hidden">
-        <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-        </svg>
-      </span>
-      Collect Competitor Data
-    </button>
+    <div class="flex items-center gap-3 mb-4">
+      <button id="collectBtn" onclick="runCollect()"
+        class="bg-brand-600 hover:bg-brand-700 text-white font-semibold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-2">
+        <span id="collectSpinner" class="hidden">
+          <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+        </span>
+        Collect Competitor Data
+      </button>
+      <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+        <input type="checkbox" id="autoMatch" class="rounded border-gray-300 text-brand-600">
+        then run Price Matching
+      </label>
+    </div>
     <div id="collectMsg" class="mt-3 text-sm hidden"></div>
   </div>
 
@@ -211,7 +217,7 @@
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
         </svg>
       </span>
-      Run AI Matching
+      Run Price Matching
     </button>
     <div id="matchMsg" class="mt-3 text-sm hidden"></div>
   </div>
@@ -428,7 +434,7 @@ async function runCollect() {
     const resp = await fetch('/collect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sources })
+      body: JSON.stringify({ sources, auto_match: document.getElementById('autoMatch').checked })
     });
     const start = await resp.json();
     if (!start.success) {
@@ -437,12 +443,16 @@ async function runCollect() {
       btn.disabled = false; spinner.classList.add('hidden');
       return;
     }
-    msg.textContent = 'Running… this may take a few minutes.';
+    const doAutoMatch = document.getElementById('autoMatch').checked;
+    msg.textContent = 'Collecting… this may take a few minutes.' + (doAutoMatch ? ' AI Matching will follow.' : '');
     const taskId = start.task_id;
     let dots = 0;
+    let elapsed = 0;
     const poll = setInterval(async () => {
       dots = (dots + 1) % 4;
-      msg.textContent = 'Running' + '.'.repeat(dots + 1);
+      elapsed += 3;
+      const phase = (doAutoMatch && elapsed > 60) ? 'Matching' : 'Collecting';
+      msg.textContent = phase + '.'.repeat(dots + 1);
       try {
         const r = await fetch('/task-status/' + taskId);
         const task = await r.json();
@@ -451,9 +461,11 @@ async function runCollect() {
           btn.disabled = false; spinner.classList.add('hidden');
           msg.className = 'mt-3 text-sm text-green-600 bg-green-50 rounded p-2';
           const result = task.result || {};
-          const parts = Object.entries(result).map(([k, v]) =>
-            `${k.replace(/_/g,' ')}: ${v.products || 0}`);
-          msg.textContent = 'Done! ' + (parts.join(' | ') || 'No results');
+          const parts = Object.entries(result)
+            .filter(([k]) => k !== '_matching')
+            .map(([k, v]) => `${k.replace(/_/g,' ')}: ${v.products || 0}`);
+          const matchInfo = result._matching ? ` | Matched: ${result._matching.matched || 0}` : '';
+          msg.textContent = 'Done! ' + (parts.join(' | ') || 'No results') + matchInfo;
           setTimeout(() => location.reload(), 2000);
         } else if (task.status === 'error') {
           clearInterval(poll);
