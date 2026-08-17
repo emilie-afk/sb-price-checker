@@ -200,6 +200,11 @@ def run_matching(db_conn, plant_types=None, sources=None):
             price_diff_pct = None
             if sb_price and sb_price > 0 and comp_price > 0:
                 price_diff_pct = (comp_price - sb_price) / sb_price * 100
+                # Sanity check: >300% more expensive or >75% cheaper almost always
+                # means a size mismatch (e.g. 2" cutting vs 6" plant). Skip these.
+                if price_diff_pct < -75 or price_diff_pct > 300:
+                    summary['skipped'] += 1
+                    continue
                 if price_diff_pct > 10:
                     market_pos = 'above_market'   # competitor costs more → SB cheaper
                 elif price_diff_pct < -10:

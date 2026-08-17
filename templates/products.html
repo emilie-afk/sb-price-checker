@@ -59,16 +59,16 @@
             onclick="sortTable(3, 'num')" data-dir="asc">
           Matches <span class="sort-icon text-gray-400">↕</span>
         </th>
-        <th class="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+        <th class="px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
             onclick="sortTable(4, 'num')" data-dir="asc">
-          Avg Diff vs SB <span class="sort-icon text-gray-400">↕</span>
+          Price vs SB <span class="sort-icon text-gray-400">↕</span>
         </th>
         <th class="text-center px-4 py-3 font-semibold text-gray-600">Position</th>
       </tr>
     </thead>
     <tbody id="tableBody">
       {% for row in products %}
-      {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=pending, 7=position, 8=avg_diff #}
+      {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=position, 7=avg_diff #}
       <tr class="border-b border-gray-100 hover:bg-gray-50 transition-colors product-row"
           data-name="{{ row[1]|lower }}">
         <td class="px-4 py-3" data-val="{{ row[1] }}">
@@ -90,24 +90,28 @@
         <td class="px-4 py-3 text-right hidden sm:table-cell" data-val="{{ row[5] or 0 }}">
           {% if row[5] %}
             <span class="text-green-700 font-medium">{{ row[5] }}</span>
-            {% if row[6] %}<span class="text-yellow-600 text-xs"> (+{{ row[6] }} pending)</span>{% endif %}
           {% else %}
             <span class="text-gray-400">—</span>
           {% endif %}
         </td>
-        <td class="px-4 py-3 text-right font-mono" data-val="{{ row[8] if row[8] is not none else '' }}">
-          {% if row[8] is not none %}
-            <span class="font-semibold
-              {% if row[8] > 5 %}text-green-600{% elif row[8] < -5 %}text-red-600{% else %}text-yellow-600{% endif %}">
-              {% if row[8] > 0 %}+{% endif %}{{ "%.1f"|format(row[8]) }}%
-            </span>
-            <span class="text-xs text-gray-400 block">competitors vs SB</span>
+        <td class="px-4 py-3" data-val="{{ row[7] if row[7] is not none else '' }}">
+          {% set diffs = source_diffs.get(row[0], []) %}
+          {% if diffs %}
+            <div class="flex flex-wrap gap-1.5">
+              {% for src_name, diff in diffs %}
+              <span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full
+                {% if diff > 5 %}bg-green-50 text-green-700{% elif diff < -5 %}bg-red-50 text-red-700{% else %}bg-yellow-50 text-yellow-700{% endif %}">
+                <span class="text-gray-400 font-normal">{{ src_name }}:</span>
+                {% if diff > 0 %}+{% endif %}{{ "%.0f"|format(diff) }}%
+              </span>
+              {% endfor %}
+            </div>
           {% else %}
-            <span class="text-gray-400">—</span>
+            <span class="text-gray-400 text-xs">—</span>
           {% endif %}
         </td>
         <td class="px-4 py-3 text-center">
-          {% set pos = row[7] %}
+          {% set pos = row[6] %}
           {% if pos == 'above_market' %}
             <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">SB Cheaper</span>
           {% elif pos == 'near_market' %}
