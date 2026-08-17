@@ -216,16 +216,26 @@ SYNONYM_GROUPS = [
 # ── Index build ────────────────────────────────────────────────────────────────
 
 def _build_index():
-    """Build a dict: normalized_name_fragment → group_index for fast lookup."""
-    index = {}  # phrase -> set of group indices
+    """Build a dict: phrase → group_index for fast lookup.
+
+    Only indexes phrases that are unambiguous — i.e. appear in exactly one
+    synonym group. This prevents genus-only words like 'haworthia' (which
+    appear across many species groups) from creating false matches.
+    Multi-word phrases are always preferred; single words are only indexed
+    if they uniquely identify one species (e.g. 'lithops').
+    """
+    # First pass: map each phrase to all groups it appears in
+    from collections import defaultdict
+    phrase_groups = defaultdict(set)
     for gid, group in enumerate(SYNONYM_GROUPS):
         for name in group:
-            # Index the full name
-            index.setdefault(name, set()).add(gid)
-            # Also index each word of 5+ chars so partial title hits work
-            for word in name.split():
-                if len(word) >= 5:
-                    index.setdefault(word, set()).add(gid)
+            phrase_groups[name].add(gid)
+
+    # Second pass: only keep phrases that belong to exactly one group
+    index = {}
+    for phrase, gids in phrase_groups.items():
+        if len(gids) == 1:
+            index[phrase] = next(iter(gids))
     return index
 
 
@@ -235,11 +245,10 @@ _INDEX = _build_index()
 def synonym_group_ids(title):
     """Return the set of synonym group indices that this title belongs to."""
     t = title.lower()
-    # Try progressively shorter substrings from the index
     hits = set()
-    for phrase, gids in _INDEX.items():
+    for phrase, gid in _INDEX.items():
         if phrase in t:
-            hits |= gids
+            hits.add(gid)
     return hits
 
 
