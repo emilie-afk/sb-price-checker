@@ -14,9 +14,8 @@ STOP_WORDS = {
     'cactus', 'tropical', 'beautiful', 'perfect', 'great', 'each',
 }
 
-# Auto-accept if score >= this; mark pending if >= PENDING_THRESHOLD
+# Minimum score to accept a match — everything below is skipped, nothing goes to review
 ACCEPT_THRESHOLD = 72
-PENDING_THRESHOLD = 48
 
 
 def _closest_sb_price(sb_variants, comp_variant_title):
@@ -189,11 +188,11 @@ def run_matching(db_conn, plant_types=None, sources=None):
         for row in candidates_raw[:30]:
             score = _score_match(sb_title, row[1], sb_product_type, row[2])
 
-            if score < PENDING_THRESHOLD:
+            if score < ACCEPT_THRESHOLD:
                 summary['skipped'] += 1
                 continue
 
-            status = 'accepted' if score >= ACCEPT_THRESHOLD else 'pending'
+            status = 'accepted'
             relationship = _determine_relationship(score, '', row[5])
 
             comp_price = float(row[6] or 0)
