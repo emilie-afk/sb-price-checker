@@ -104,10 +104,26 @@ def dashboard():
         SELECT source, COUNT(*) as products FROM competitor_products GROUP BY source
     ''').fetchall()
 
-    recent_log = db.execute('''
+    _raw_log = db.execute('''
         SELECT source, products_found, status, message, ran_at
         FROM collection_log ORDER BY ran_at DESC LIMIT 20
     ''').fetchall()
+
+    # Convert ran_at from UTC → Vietnam time (GMT+7) for display
+    from datetime import timedelta
+    _vn_offset = timedelta(hours=7)
+    def _to_vn(ts_str):
+        if not ts_str:
+            return ts_str
+        try:
+            dt = datetime.strptime(ts_str[:19], '%Y-%m-%dT%H:%M:%S') + _vn_offset
+            return dt.strftime('%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            return ts_str
+    recent_log = [
+        (r[0], r[1], r[2], r[3], _to_vn(r[4]))
+        for r in _raw_log
+    ]
 
     mcg_queue = db.execute(
         "SELECT status, message, completed_at FROM scrape_queue WHERE source='mountain_crest' ORDER BY requested_at DESC LIMIT 1"
@@ -143,7 +159,7 @@ def dashboard():
         mcg_queue=mcg_queue,
         plant_types=plant_types,
         non_plant_types=non_plant_types,
-        today_date=datetime.utcnow().strftime('%Y-%m-%d'))
+        today_date=(datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d'))
 
 
 @bp.route('/products')
