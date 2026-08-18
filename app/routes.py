@@ -81,9 +81,23 @@ def dashboard():
     matches_pending = db.execute("SELECT COUNT(*) as cnt FROM matches WHERE status='pending'").fetchone()[0]
     matches_accepted = db.execute("SELECT COUNT(*) as cnt FROM matches WHERE status='accepted'").fetchone()[0]
 
-    above = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='above_market' AND status='accepted'").fetchone()[0]
-    near  = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='near_market'  AND status='accepted'").fetchone()[0]
-    below = db.execute("SELECT COUNT(DISTINCT sb_product_id) as cnt FROM matches WHERE market_position='below_market' AND status='accepted'").fetchone()[0]
+    # Count products by their average-based position (consistent with the products page)
+    _pos_query = '''
+        SELECT
+          SUM(CASE WHEN avg_diff >  10 THEN 1 ELSE 0 END) as above,
+          SUM(CASE WHEN avg_diff < -10 THEN 1 ELSE 0 END) as below,
+          SUM(CASE WHEN avg_diff BETWEEN -10 AND 10 THEN 1 ELSE 0 END) as near
+        FROM (
+          SELECT AVG(price_diff_pct) as avg_diff
+          FROM matches
+          WHERE status='accepted' AND price_diff_pct IS NOT NULL
+          GROUP BY sb_product_id
+        ) sub
+    '''
+    _pos = db.execute(_pos_query).fetchone()
+    above = _pos[0] or 0
+    below = _pos[1] or 0
+    near  = _pos[2] or 0
 
     by_source = db.execute('''
         SELECT source, COUNT(*) as products FROM competitor_products GROUP BY source
@@ -135,11 +149,17 @@ def products():
     db = get_db()
     position = request.args.get('position')  # e.g. below_market, above_market, near_market
 
-    # Main product rows
+    # Overall market position derived from average diff across all competitors:
+    # avg > 10% → above_market (SB cheaper), avg < -10% → below_market (SB pricier)
     base_query = '''
         SELECT p.id, p.title, p.product_type, p.price_min, p.price_max,
                COUNT(CASE WHEN m.status='accepted' THEN 1 END) as accepted,
-               MAX(CASE WHEN m.status='accepted' THEN m.market_position END) as position,
+               CASE
+                 WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) > 10  THEN 'above_market'
+                 WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) < -10 THEN 'below_market'
+                 WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) IS NOT NULL THEN 'near_market'
+                 ELSE NULL
+               END as position,
                AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) as avg_diff
         FROM sb_products p
         LEFT JOIN matches m ON m.sb_product_id = p.id
@@ -148,14 +168,41 @@ def products():
     '''
     if position:
         rows = db.execute(
-            base_query + " HAVING MAX(CASE WHEN m.status='accepted' THEN m.market_position END) = %s"
-                       + " ORDER BY AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) ASC",
+            base_query + '''
+              HAVING (
+                CASE
+                  WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) > 10  THEN 'above_market'
+                  WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) < -10 THEN 'below_market'
+                  WHEN AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) IS NOT NULL THEN 'near_market'
+                  ELSE NULL
+                END) = %s
+              ORDER BY AVG(CASE WHEN m.status='accepted' THEN m.price_diff_pct END) ASC
+            ''',
             (position,)
         ).fetchall()
     else:
         rows = db.execute(base_query + ' ORDER BY p.title ASC').fetchall()
 
-    # Per-competitor avg diff for each product
+    # Fixed competitor display order and labels
+    source_labels = {
+        'mountain_crest':   'MCG',
+        'planet_desert':    'Planet Desert',
+        'house_plant_shop': 'House Plant Shop',
+        'the_sill':         'The Sill',
+        'bloomscape':       'Bloomscape',
+    }
+    competitor_order = list(source_labels.keys())  # column order
+
+    # Which competitors actually have accepted matches?
+    active_sources = {r[0] for r in db.execute(
+        "SELECT DISTINCT cp.source FROM matches m "
+        "JOIN competitor_variants cv ON cv.id=m.competitor_variant_id "
+        "JOIN competitor_products cp ON cp.id=cv.product_id "
+        "WHERE m.status='accepted'"
+    ).fetchall()}
+    competitors = [(src, source_labels[src]) for src in competitor_order if src in active_sources]
+
+    # Per-competitor avg diff: product_id -> {source_key: avg_diff}
     source_diffs_rows = db.execute('''
         SELECT m.sb_product_id, cp.source, AVG(m.price_diff_pct) as avg_diff
         FROM matches m
@@ -165,21 +212,13 @@ def products():
         GROUP BY m.sb_product_id, cp.source
     ''').fetchall()
 
-    # Build dict: product_id -> [(source, avg_diff), ...]
-    source_diffs = {}
-    source_labels = {
-        'mountain_crest': 'MCG',
-        'planet_desert': 'Planet Desert',
-        'house_plant_shop': 'House Plant Shop',
-        'the_sill': 'The Sill',
-        'bloomscape': 'Bloomscape',
-    }
+    source_diffs = {}   # product_id -> {source_key: diff}
     for r in source_diffs_rows:
         pid, src, diff = r[0], r[1], r[2]
-        source_diffs.setdefault(pid, []).append((source_labels.get(src, src), diff))
+        source_diffs.setdefault(pid, {})[src] = diff
 
     return render_template('products.html', products=rows, position_filter=position,
-                           source_diffs=source_diffs)
+                           competitors=competitors, source_diffs=source_diffs)
 
 
 @bp.route('/products/<int:product_id>')
