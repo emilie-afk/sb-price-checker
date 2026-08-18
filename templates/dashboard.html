@@ -234,10 +234,10 @@
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div class="flex-1 min-w-0">
       <h2 class="text-lg font-semibold text-amber-800 mb-1">Mountain Crest Gardens — Local Worker</h2>
-      <p class="text-sm text-amber-700 mb-2">MCG's Cloudflare blocks Render's servers. Queue a scrape here, then run this in Terminal:</p>
+      <p class="text-sm text-amber-700 mb-2">MCG's Cloudflare blocks Render's servers. Queue a scrape here, then run this in PowerShell:</p>
       <div class="flex items-center gap-2 mb-4">
-        <code class="bg-amber-100 px-2.5 py-1.5 rounded font-mono text-xs text-amber-900 select-all break-all">cd "C:\Users\phuon\Documents\Tho\Succulent Box\2026\Jun 2026\Competitor Price Checker" &amp;&amp; python mcg_worker.py</code>
-        <button onclick="navigator.clipboard.writeText('cd \"C:\\\\Users\\\\phuon\\\\Documents\\\\Tho\\\\Succulent Box\\\\2026\\\\Jun 2026\\\\Competitor Price Checker\" && python mcg_worker.py').then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='Copy',1500)})"
+        <code id="mcgCmd" class="bg-amber-100 px-2.5 py-1.5 rounded font-mono text-xs text-amber-900 select-all break-all">cd "C:\Users\phuon\Documents\Tho\Succulent Box\2026\Jun 2026\Competitor Price Checker"; python mcg_worker.py</code>
+        <button id="mcgCopyBtn" onclick="copyMcgCmd()"
           class="shrink-0 text-xs bg-amber-200 hover:bg-amber-300 text-amber-800 font-medium px-2 py-1 rounded transition-colors">Copy</button>
       </div>
       <div class="flex items-center gap-3 flex-wrap">
@@ -583,6 +583,15 @@ async function runMatch(clearPending = false) {
     msg.textContent = 'Request failed: ' + e.message;
     btn.disabled = false; spinner.classList.add('hidden');
   }
+}
+
+function copyMcgCmd() {
+  const cmd = document.getElementById('mcgCmd').textContent;
+  navigator.clipboard.writeText(cmd).then(() => {
+    const btn = document.getElementById('mcgCopyBtn');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
 }
 
 async function triggerMcg() {
