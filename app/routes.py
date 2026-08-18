@@ -105,7 +105,7 @@ def dashboard():
 
     recent_log = db.execute('''
         SELECT source, products_found, status, message, ran_at
-        FROM collection_log ORDER BY ran_at DESC LIMIT 6
+        FROM collection_log ORDER BY ran_at DESC LIMIT 20
     ''').fetchall()
 
     mcg_queue = db.execute(
@@ -141,7 +141,8 @@ def dashboard():
         recent_log=recent_log,
         mcg_queue=mcg_queue,
         plant_types=plant_types,
-        non_plant_types=non_plant_types)
+        non_plant_types=non_plant_types,
+        today_date=datetime.utcnow().strftime('%Y-%m-%d'))
 
 
 @bp.route('/products')

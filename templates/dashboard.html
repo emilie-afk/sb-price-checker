@@ -293,21 +293,41 @@
   <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
     <h2 class="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h2>
     {% if recent_log %}
+    {# Group logs by date so we can show a "Today" header #}
+    {% set ns = namespace(last_date='') %}
     <table class="w-full text-sm">
       <thead>
         <tr class="text-left text-gray-400 border-b">
           <th class="pb-2 font-medium">Source</th>
           <th class="pb-2 font-medium">Status</th>
-          <th class="pb-2 font-medium text-right">Products</th>
+          <th class="pb-2 font-medium text-right pr-4">Products</th>
+          <th class="pb-2 font-medium text-right">Time</th>
         </tr>
       </thead>
       <tbody>
         {% for log in recent_log %}
-        <tr class="border-b border-gray-50 last:border-0">
-          <td class="py-2 text-gray-600">
+        {# log: 0=source, 1=products_found, 2=status, 3=message, 4=ran_at #}
+        {% set ran_at = log[4] or '' %}
+        {% set log_date = ran_at[:10] %}
+        {% if log_date != ns.last_date %}
+          {% set ns.last_date = log_date %}
+          <tr>
+            <td colspan="4" class="pt-3 pb-1">
+              <span class="text-xs font-semibold uppercase tracking-wide
+                {% if log_date == today_date %}text-brand-600{% else %}text-gray-400{% endif %}">
+                {% if log_date == today_date %}Today — {{ log_date }}{% else %}{{ log_date }}{% endif %}
+              </span>
+            </td>
+          </tr>
+        {% endif %}
+        <tr class="border-b border-gray-50 last:border-0
+          {% if log_date == today_date %}bg-brand-50/30{% endif %}">
+          <td class="py-2 text-gray-700 font-medium">
             {% if log[0] == 'planet_desert' %}Planet Desert
             {% elif log[0] == 'mountain_crest' %}Mtn Crest
             {% elif log[0] == 'house_plant_shop' %}House Plant Shop
+            {% elif log[0] == 'the_sill' %}The Sill
+            {% elif log[0] == 'bloomscape' %}Bloomscape
             {% else %}{{ log[0] }}{% endif %}
           </td>
           <td class="py-2">
@@ -324,7 +344,10 @@
             <p class="text-xs text-red-400 mt-1 max-w-xs" title="{{ log[3] }}">{{ log[3][:80] }}{% if log[3]|length > 80 %}…{% endif %}</p>
             {% endif %}
           </td>
-          <td class="py-2 text-right text-gray-600">{{ log[1] }}</td>
+          <td class="py-2 text-right text-gray-600 pr-4">{{ log[1] or 0 }}</td>
+          <td class="py-2 text-right text-gray-400 text-xs whitespace-nowrap">
+            {{ ran_at[11:16] if ran_at|length >= 16 else '—' }}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
