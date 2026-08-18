@@ -110,6 +110,15 @@ def run_matching(db_conn, plant_types=None, sources=None):
     cursor.execute('SELECT sb_product_id, competitor_variant_id FROM matches')
     existing_matches = set((r[0], r[1]) for r in cursor.fetchall())
 
+    # Pre-load ALL SB variants in one query (avoids 1 DB round-trip per product)
+    cursor.execute('SELECT product_id, variant_title, price, available FROM sb_variants')
+    _all_sb_variants = cursor.fetchall()
+    sb_variants_by_product = defaultdict(list)
+    for r in _all_sb_variants:
+        sb_variants_by_product[r[0]].append(
+            {'variant_title': r[1], 'price': float(r[2] or 0), 'available': r[3]}
+        )
+
     # Load all competitor variants into memory
     if sources:
         placeholders = ','.join(['%s'] * len(sources))
@@ -157,16 +166,8 @@ def run_matching(db_conn, plant_types=None, sources=None):
         if any(w in sb_title.lower() for w in ('gift card', 'insurance', 'shipping')):
             continue
 
-        # Load SB variants for price comparison
-        cursor.execute(
-            'SELECT variant_title, price, available FROM sb_variants WHERE product_id=%s',
-            (sb_id,)
-        )
-        sb_variants_rows = cursor.fetchall()
-        sb_variants = [
-            {'variant_title': r[0], 'price': float(r[1] or 0), 'available': r[2]}
-            for r in sb_variants_rows
-        ]
+        # Fetch from pre-loaded in-memory dict (no extra DB query per product)
+        sb_variants = sb_variants_by_product.get(sb_id, [])
 
         # Find candidates via keyword index.
         # Also include synonym words so "Burro's Tail" finds "sedum morganianum" entries.
