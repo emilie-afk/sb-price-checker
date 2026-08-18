@@ -45,6 +45,15 @@ def _meaningful_words(title):
             if len(w) >= 3 and w not in STOP_WORDS}
 
 
+def _extract_cultivar(title):
+    """Extract cultivar name from title, e.g. "Echeveria 'Arco'" → 'arco'.
+    Returns lowercase string or None."""
+    m = re.search(r"['\"]([^'\"]+)['\"]", title)
+    if m:
+        return m.group(1).lower().strip()
+    return None
+
+
 def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
     """Return a 0–100 similarity score for two product titles.
 
@@ -52,18 +61,33 @@ def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
     1. Synonym lookup  — exact cross-name match (e.g. 'Zebra Plant' == 'Haworthia fasciata')
     2. Word overlap (Jaccard) — how many meaningful words are shared
     3. Sequence similarity  — catches partial title matches
+
+    Cultivar guard: if SB title has a cultivar name in quotes (e.g. 'Arco'),
+    the competitor must also contain that cultivar name — otherwise score is
+    capped at 50 (below threshold) to prevent genus-level false matches.
     """
     # 1. Synonym lookup — if both titles refer to the same plant, score is high
     if shares_synonym_group(sb_title, comp_title):
         return 88  # strong match; will be auto-accepted
 
+    # 2. Cultivar guard — if SB has a specific cultivar, competitor must too
+    sb_cultivar = _extract_cultivar(sb_title)
+    if sb_cultivar:
+        comp_lower = comp_title.lower()
+        comp_cultivar = _extract_cultivar(comp_title)
+        # Check if cultivar words appear anywhere in competitor title
+        cultivar_words = set(re.findall(r'[a-z]+', sb_cultivar))
+        comp_words = set(re.findall(r'[a-z]+', comp_lower))
+        if not cultivar_words & comp_words:
+            return 0  # competitor doesn't have this cultivar — hard skip
+
     a = re.sub(r'[^a-z0-9 ]', '', sb_title.lower())
     b = re.sub(r'[^a-z0-9 ]', '', comp_title.lower())
 
-    # 2. Sequence ratio
+    # 3. Sequence ratio
     seq = SequenceMatcher(None, a, b).ratio()
 
-    # 3. Jaccard on meaningful words
+    # 4. Jaccard on meaningful words
     wa = _meaningful_words(sb_title)
     wb = _meaningful_words(comp_title)
     union = wa | wb
