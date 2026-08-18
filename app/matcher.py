@@ -113,7 +113,10 @@ def _determine_relationship(score, sb_variant_title, comp_variant_title):
     return 'comparable'
 
 
-def run_matching(db_conn, plant_types=None, sources=None):
+_progress: dict = {}   # task_id → {done, total, matched, skipped}
+
+
+def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
     """Match SB products against competitor products using Python similarity.
 
     plant_types: list of product_type strings to include (None = all)
@@ -179,6 +182,9 @@ def run_matching(db_conn, plant_types=None, sources=None):
 
     summary = {'matched': 0, 'skipped': 0}
     pending_inserts = []
+    total_sb = len(sb_products)
+    if task_id:
+        _progress[task_id] = {'done': 0, 'total': total_sb, 'matched': 0, 'skipped': 0}
 
     for i, sb_row in enumerate(sb_products):
         sb_id, sb_title, sb_product_type = sb_row[0], sb_row[1], sb_row[2]
@@ -258,8 +264,11 @@ def run_matching(db_conn, plant_types=None, sources=None):
             existing_matches.add((sb_id, row[4]))
             summary['matched'] += 1
 
+        if task_id:
+            _progress[task_id] = {'done': i + 1, 'total': total_sb,
+                                   'matched': summary['matched'], 'skipped': summary['skipped']}
         if (i + 1) % 100 == 0:
-            print(f'[match] {i+1}/{len(sb_products)} done — '
+            print(f'[match] {i+1}/{total_sb} done — '
                   f'matched={summary["matched"]} skipped={summary["skipped"]}', flush=True)
 
     # Final flush
@@ -271,6 +280,20 @@ def run_matching(db_conn, plant_types=None, sources=None):
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', pending_inserts)
         db_conn.commit()
+
+    if task_id and task_id in _progress:
+        del _progress[task_id]
+
+    msg = f'matched {summary["matched"]} pairs, skipped {summary["skipped"]}'
+    # Log to collection_log so it shows in Recent Activity
+    try:
+        cursor.execute(
+            "INSERT INTO collection_log (source, products_found, status, message, ran_at) VALUES (%s, %s, %s, %s, %s)",
+            ('matching', summary['matched'], 'success', msg, now)
+        )
+        db_conn.commit()
+    except Exception:
+        pass
 
     print(f'[match] done: {summary}', flush=True)
     return summary
