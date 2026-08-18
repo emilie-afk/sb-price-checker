@@ -8,7 +8,7 @@ from flask import (Blueprint, render_template, jsonify, current_app,
                    redirect, url_for, make_response, request, session)
 from .database import get_db, execute_db, _connect
 from .scraper import run_collection, sync_sb_products
-from .matcher import run_matching
+from .matcher import run_matching, _progress as _match_progress
 
 bp = Blueprint('main', __name__)
 
@@ -444,19 +444,51 @@ def sync_sb():
 @bp.route('/collect', methods=['POST'])
 def collect():
     data = request.get_json(silent=True) or {}
-    sources = data.get('sources') or None       # None = all competitors
-    auto_match = data.get('auto_match', False)  # chain matching after collection
+    sources = data.get('sources') or None  # None = all competitors
 
-    def _run(db, src, do_match):
+    def _run(db, src):
         result = run_collection(db, sources=src)
-        if do_match:
-            print('[collect] collection done — auto-starting AI matching', flush=True)
-            match_result = run_matching(db)
-            result['_matching'] = match_result
+        # Always auto-refresh price diffs after collection —
+        # no need to re-run name matching, just recalculate from current prices
+        print('[collect] collection done — refreshing price diffs', flush=True)
+        cur = db.cursor()
+        cur.execute('''
+            UPDATE matches
+            SET price_diff_pct = (
+                SELECT (cv.price - p.price_min) / p.price_min * 100
+                FROM competitor_variants cv
+                JOIN sb_products p ON p.id = matches.sb_product_id
+                WHERE cv.id = matches.competitor_variant_id
+                  AND cv.price > 0 AND p.price_min > 0
+            ),
+            market_position = CASE
+                WHEN (SELECT (cv.price - p.price_min) / p.price_min * 100
+                      FROM competitor_variants cv
+                      JOIN sb_products p ON p.id = matches.sb_product_id
+                      WHERE cv.id = matches.competitor_variant_id
+                        AND cv.price > 0 AND p.price_min > 0) > 10  THEN 'above_market'
+                WHEN (SELECT (cv.price - p.price_min) / p.price_min * 100
+                      FROM competitor_variants cv
+                      JOIN sb_products p ON p.id = matches.sb_product_id
+                      WHERE cv.id = matches.competitor_variant_id
+                        AND cv.price > 0 AND p.price_min > 0) < -10 THEN 'below_market'
+                WHEN (SELECT (cv.price - p.price_min) / p.price_min * 100
+                      FROM competitor_variants cv
+                      JOIN sb_products p ON p.id = matches.sb_product_id
+                      WHERE cv.id = matches.competitor_variant_id
+                        AND cv.price > 0 AND p.price_min > 0) IS NOT NULL THEN 'near_market'
+                ELSE market_position
+            END
+            WHERE status = 'accepted'
+        ''')
+        updated = cur.rowcount
+        db.commit()
+        print(f'[collect] refreshed price diffs for {updated} matches', flush=True)
+        result['prices_refreshed'] = updated
         return result
 
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run, sources, auto_match)
+    _run_in_background(task_id, _run, sources)
     return jsonify({'success': True, 'task_id': task_id})
 
 
@@ -504,6 +536,15 @@ def mcg_status():
     return jsonify({'status': row[0], 'message': row[1], 'completed_at': row[2]})
 
 
+@bp.route('/match-progress/<task_id>')
+def match_progress(task_id):
+    p = _match_progress.get(task_id)
+    if not p:
+        return jsonify({'done': 0, 'total': 0, 'pct': 0})
+    pct = int(p['done'] / p['total'] * 100) if p['total'] else 0
+    return jsonify({**p, 'pct': pct})
+
+
 @bp.route('/match', methods=['POST'])
 def run_match():
     data = request.get_json(silent=True) or {}
@@ -511,14 +552,70 @@ def run_match():
     sources = data.get('sources') or None           # None = all competitors
     clear_pending = data.get('clear_pending', False)
 
+    task_id = uuid.uuid4().hex[:8]
+
     def _run(db, pt, src, do_clear):
         if do_clear:
             cur = db.cursor()
             cur.execute("DELETE FROM matches WHERE status='pending'")
             db.commit()
             print('[match] cleared all pending matches', flush=True)
-        return run_matching(db, plant_types=pt, sources=src)
+        return run_matching(db, plant_types=pt, sources=src, task_id=task_id)
+
+    _run_in_background(task_id, _run, plant_types, sources, clear_pending)
+    return jsonify({'success': True, 'task_id': task_id})
+
+
+@bp.route('/refresh-prices', methods=['POST'])
+def refresh_prices():
+    """Recalculate price_diff_pct for all accepted matches from current prices.
+
+    This is much faster than re-running matching — just one SQL UPDATE.
+    Run this after every price collection instead of re-matching from scratch.
+    """
+    def _run(db):
+        cur = db.cursor()
+        cur.execute('''
+            UPDATE matches
+            SET price_diff_pct = (
+                SELECT (cv.price - p.price_min) / p.price_min * 100
+                FROM competitor_variants cv
+                JOIN sb_products p ON p.id = matches.sb_product_id
+                WHERE cv.id = matches.competitor_variant_id
+                  AND cv.price > 0 AND p.price_min > 0
+            ),
+            market_position = CASE
+                WHEN (
+                    SELECT (cv.price - p.price_min) / p.price_min * 100
+                    FROM competitor_variants cv
+                    JOIN sb_products p ON p.id = matches.sb_product_id
+                    WHERE cv.id = matches.competitor_variant_id
+                      AND cv.price > 0 AND p.price_min > 0
+                ) > 10  THEN 'above_market'
+                WHEN (
+                    SELECT (cv.price - p.price_min) / p.price_min * 100
+                    FROM competitor_variants cv
+                    JOIN sb_products p ON p.id = matches.sb_product_id
+                    WHERE cv.id = matches.competitor_variant_id
+                      AND cv.price > 0 AND p.price_min > 0
+                ) < -10 THEN 'below_market'
+                WHEN (
+                    SELECT (cv.price - p.price_min) / p.price_min * 100
+                    FROM competitor_variants cv
+                    JOIN sb_products p ON p.id = matches.sb_product_id
+                    WHERE cv.id = matches.competitor_variant_id
+                      AND cv.price > 0 AND p.price_min > 0
+                ) IS NOT NULL THEN 'near_market'
+                ELSE market_position
+            END
+            WHERE status = 'accepted'
+        ''')
+        updated = cur.rowcount
+        db.commit()
+        msg = f'Refreshed prices for {updated} matches'
+        print(f'[refresh] {msg}', flush=True)
+        return msg
 
     task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run, plant_types, sources, clear_pending)
+    _run_in_background(task_id, _run)
     return jsonify({'success': True, 'task_id': task_id})
