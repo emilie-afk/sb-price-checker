@@ -1,3 +1,4 @@
+import os
 import requests
 import time
 import re
@@ -87,6 +88,28 @@ def _parse_mcg_page(html, page, MCG_BASE):
     if not cards:
         cards = soup.select('[data-product-id]') or soup.select('.productGrid li') or soup.select('.product-item')
 
+    if not cards and page == 1:
+        # Debug: save raw HTML so we can inspect the actual structure
+        debug_path = os.path.join(os.path.dirname(__file__), '..', 'mcg_debug.html')
+        with open(debug_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+        print(f'[mcg] DEBUG: 0 cards found — saved raw HTML to mcg_debug.html', flush=True)
+        print(f'[mcg] DEBUG: HTML preview: {repr(html[:300])}', flush=True)
+        # Print all top-level tag names to help identify structure
+        body = soup.find('body')
+        if body:
+            tags = [c.name for c in body.children if hasattr(c, 'name') and c.name]
+            print(f'[mcg] DEBUG: body children: {tags[:20]}', flush=True)
+        # Show first element matching each candidate selector
+        for sel in ['article.card', 'li.product', 'div.product', 'article', '.card',
+                    '[class*="product"]', '.productCard', '.grid-item']:
+            els = soup.select(sel)
+            if els:
+                print(f'[mcg] DEBUG: selector {sel!r} → {len(els)} results. First: {str(els[0])[:300]}', flush=True)
+                break
+        else:
+            print(f'[mcg] DEBUG: No known selectors matched. Try checking mcg_debug.html.', flush=True)
+
     for card in cards:
         # Title: h3.card-title text (a is a sibling of h3, not child of it)
         h3 = card.select_one('h3.card-title') or card.select_one('h3')
@@ -148,9 +171,31 @@ def fetch_mcg_bigcommerce():
     page = 1
 
     # Try curl_cffi with Chrome impersonation first; fall back to plain requests
+    def _decode_response(resp):
+        """Decode response content, handling gzip/brotli if not auto-decompressed."""
+        import gzip as _gzip
+        content = resp.content
+        # Detect gzip magic bytes (0x1f 0x8b)
+        if content[:2] == b'\x1f\x8b':
+            try:
+                return _gzip.decompress(content).decode('utf-8', errors='replace')
+            except Exception:
+                pass
+        # Detect brotli (try brotli library if available)
+        if content[:1] == b'\x1b' or content[:1] == b'\x0b':
+            try:
+                import brotli
+                return brotli.decompress(content).decode('utf-8', errors='replace')
+            except Exception:
+                pass
+        # Fall back to resp.text (already decoded string)
+        return resp.text
+
     def _fetch_page(url):
         try:
             from curl_cffi import requests as cf_requests
+            # Do NOT manually set Accept-Encoding — let curl_cffi handle
+            # decompression automatically via Chrome impersonation
             resp = cf_requests.get(
                 url,
                 impersonate='chrome131',
@@ -158,7 +203,6 @@ def fetch_mcg_bigcommerce():
                 headers={
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
                     'Cache-Control': 'no-cache',
                     'Pragma': 'no-cache',
                     'Upgrade-Insecure-Requests': '1',
@@ -168,20 +212,25 @@ def fetch_mcg_bigcommerce():
                     'Sec-Fetch-User': '?1',
                 }
             )
-            if resp.status_code == 200 and len(resp.text) > 10000:
-                return resp.status_code, resp.text
+            if resp.status_code == 200:
+                html = _decode_response(resp)
+                print(f'[mcg] curl_cffi ok: {len(html)} chars, starts: {repr(html[:60])}', flush=True)
+                if len(html) > 10000:
+                    return resp.status_code, html
         except Exception as e:
             print(f'[mcg] curl_cffi failed: {e}', flush=True)
 
-        # Fallback: plain requests with browser headers
+        # Fallback: plain requests (auto-decompresses gzip/deflate, not brotli)
         resp = requests.get(url, timeout=30, headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate',  # no 'br' — requests can't decode brotli
             'Upgrade-Insecure-Requests': '1',
         })
-        return resp.status_code, resp.text
+        html = _decode_response(resp)
+        print(f'[mcg] requests fallback: {len(html)} chars, starts: {repr(html[:60])}', flush=True)
+        return resp.status_code, html
 
     while True:
         url = f'{MCG_BASE}/explore-all/?page={page}'
