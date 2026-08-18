@@ -173,16 +173,21 @@ def run_matching(db_conn, plant_types=None, sources=None):
         # Also include synonym words so "Burro's Tail" finds "sedum morganianum" entries.
         search_terms = _keyword_search_terms(sb_title)
         extra_terms = synonym_keywords(sb_title)  # scientific/alt names from synonym groups
-        all_terms = list(dict.fromkeys(search_terms + list(extra_terms)))  # deduplicated, original order first
+        all_terms = list(dict.fromkeys(search_terms + list(extra_terms)))  # deduplicated
 
         seen_variant_ids = set()
         candidates_raw = []
-        for term in all_terms[:8]:  # increased from 4 to 8 to cover synonym expansions
+        MAX_CANDIDATES = 30
+        for term in all_terms[:8]:
             for row in keyword_index.get(term, []):
                 vid = row[4]
                 if vid not in seen_variant_ids and (sb_id, vid) not in existing_matches:
                     seen_variant_ids.add(vid)
                     candidates_raw.append(row)
+                    if len(candidates_raw) >= MAX_CANDIDATES:
+                        break  # enough candidates — stop scanning this term
+            if len(candidates_raw) >= MAX_CANDIDATES:
+                break  # enough across all terms
 
         if not candidates_raw:
             continue
@@ -190,7 +195,7 @@ def run_matching(db_conn, plant_types=None, sources=None):
         now = datetime.utcnow().isoformat()
 
         # Score each candidate with Python similarity
-        for row in candidates_raw[:30]:
+        for row in candidates_raw:
             score = _score_match(sb_title, row[1], sb_product_type, row[2])
 
             if score < ACCEPT_THRESHOLD:
@@ -228,17 +233,6 @@ def run_matching(db_conn, plant_types=None, sources=None):
             ))
             existing_matches.add((sb_id, row[4]))
             summary['matched'] += 1
-
-            # Batch commit every 50 inserts
-            if len(pending_inserts) >= 50:
-                cursor._cur.executemany('''
-                    INSERT INTO matches
-                    (sb_product_id, competitor_variant_id, relationship, confidence, status,
-                     ai_explanation, price_diff_pct, market_position, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ''', pending_inserts)
-                db_conn.commit()
-                pending_inserts.clear()
 
         if (i + 1) % 100 == 0:
             print(f'[match] {i+1}/{len(sb_products)} done — '
