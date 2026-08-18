@@ -2,10 +2,10 @@
 {% block title %}Products{% endblock %}
 
 {% block content %}
-<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
   <div>
     <div class="flex items-center gap-3">
-      <h1 class="text-3xl font-bold text-gray-900">Your Plants</h1>
+      <h1 class="text-2xl font-bold text-gray-900">Your Plants</h1>
       {% if position_filter %}
       <span class="px-3 py-1 rounded-full text-sm font-semibold
         {% if position_filter == 'below_market' %}bg-red-100 text-red-700
@@ -18,11 +18,9 @@
       <a href="/products" class="text-sm text-gray-400 hover:text-gray-600">✕ Clear filter</a>
       {% endif %}
     </div>
-    <p class="text-gray-500 mt-1">{{ products|length }} products
-      {% if position_filter %} matching filter{% endif %}
-      — click column headers to sort</p>
+    <p class="text-gray-500 text-sm mt-0.5"><span id="visibleCount">{{ products|length }}</span> products shown</p>
   </div>
-  <div class="flex items-center gap-3">
+  <div class="flex items-center gap-2 flex-wrap">
     {% if position_filter %}
     <a href="/export.csv?position={{ position_filter }}"
        class="bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
@@ -35,23 +33,49 @@
     </a>
     {% endif %}
     <input id="searchBox" type="text" placeholder="Search plants…"
-      class="border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-56">
+      class="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-48">
   </div>
 </div>
 
-<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+<!-- Type filter bar -->
+<div class="flex flex-wrap gap-2 mb-3" id="typeFilters">
+  <button onclick="filterType('all')" data-type="all"
+    class="type-btn active text-xs font-semibold px-3 py-1.5 rounded-full border border-brand-300 bg-brand-600 text-white transition-colors">
+    All
+  </button>
+  <button onclick="filterType('succulents')" data-type="succulents"
+    class="type-btn text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-300 bg-white text-gray-600 hover:border-brand-400 transition-colors">
+    Succulents
+  </button>
+  <button onclick="filterType('cacti')" data-type="cacti"
+    class="type-btn text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-300 bg-white text-gray-600 hover:border-brand-400 transition-colors">
+    Cacti
+  </button>
+  <button onclick="filterType('air plants')" data-type="air plants"
+    class="type-btn text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-300 bg-white text-gray-600 hover:border-brand-400 transition-colors">
+    Air Plants
+  </button>
+  <button onclick="filterType('houseplants')" data-type="houseplants"
+    class="type-btn text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-300 bg-white text-gray-600 hover:border-brand-400 transition-colors">
+    Houseplants
+  </button>
+</div>
+
+<!-- Scrollable table with frozen header -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto" style="max-height: 72vh; overflow-y: auto;">
   <table class="w-full text-sm" id="productsTable">
-    <thead class="bg-gray-50 border-b border-gray-200">
+    <thead class="bg-gray-50 border-b border-gray-200" style="position: sticky; top: 0; z-index: 10;">
       <tr>
-        <th class="text-left px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none whitespace-nowrap"
+        <th class="text-left px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none"
+            style="min-width:180px; max-width:280px;"
             onclick="sortTable(0, 'str')" data-dir="asc">
           Product <span class="sort-icon text-gray-400">↕</span>
         </th>
-        <th class="text-left px-4 py-3 font-semibold text-gray-600 hidden md:table-cell cursor-pointer hover:bg-gray-100 select-none whitespace-nowrap"
+        <th class="text-left px-3 py-3 font-semibold text-gray-600 hidden md:table-cell cursor-pointer hover:bg-gray-100 select-none whitespace-nowrap"
             onclick="sortTable(1, 'str')" data-dir="asc">
           Type <span class="sort-icon text-gray-400">↕</span>
         </th>
-        <th class="text-right px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none whitespace-nowrap"
+        <th class="text-right px-3 py-3 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 select-none whitespace-nowrap"
             onclick="sortTable(2, 'num')" data-dir="asc">
           SB Price <span class="sort-icon text-gray-400">↕</span>
         </th>
@@ -61,25 +85,26 @@
           {{ src_label }} <span class="sort-icon text-gray-400">↕</span>
         </th>
         {% endfor %}
-        <th class="text-center px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Overall</th>
+        <th class="text-center px-3 py-3 font-semibold text-gray-600 whitespace-nowrap bg-gray-50">Overall</th>
       </tr>
     </thead>
     <tbody id="tableBody">
       {% for row in products %}
-      {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=position, 7=avg_diff #}
+      {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=position, 7=min_diff #}
       {% set diffs = source_diffs.get(row[0], {}) %}
       <tr class="border-b border-gray-100 hover:bg-gray-50 transition-colors product-row"
-          data-name="{{ row[1]|lower }}">
-        <td class="px-4 py-3 whitespace-nowrap" data-val="{{ row[1] }}">
+          data-name="{{ row[1]|lower }}"
+          data-type="{{ (row[2] or '')|lower }}">
+        <td class="px-4 py-2" style="max-width:280px;" data-val="{{ row[1] }}">
           <a href="{{ url_for('main.product_detail', product_id=row[0]) }}"
-             class="font-medium text-brand-700 hover:text-brand-900 hover:underline">
+             class="text-xs font-medium text-brand-700 hover:text-brand-900 hover:underline leading-snug block">
             {{ row[1] }}
           </a>
         </td>
-        <td class="px-4 py-3 text-gray-500 hidden md:table-cell whitespace-nowrap" data-val="{{ row[2] or '' }}">
+        <td class="px-3 py-2 text-gray-500 text-xs hidden md:table-cell whitespace-nowrap" data-val="{{ row[2] or '' }}">
           {{ row[2] or '—' }}
         </td>
-        <td class="px-4 py-3 text-right font-mono text-gray-700 whitespace-nowrap" data-val="{{ row[3] or 0 }}">
+        <td class="px-3 py-2 text-right font-mono text-gray-700 text-xs whitespace-nowrap" data-val="{{ row[3] or 0 }}">
           {% if row[3] and row[4] and row[3] != row[4] %}
             ${{ "%.2f"|format(row[3]) }}–${{ "%.2f"|format(row[4]) }}
           {% elif row[3] %}
@@ -88,9 +113,9 @@
         </td>
         {% for src_key, src_label in competitors %}
         {% set diff = diffs.get(src_key) %}
-        <td class="px-3 py-3 text-center" data-val="{{ diff if diff is not none else '' }}">
+        <td class="px-3 py-2 text-center" data-val="{{ diff if diff is not none else '' }}">
           {% if diff is not none %}
-            <span class="inline-block font-semibold text-xs px-2 py-1 rounded-full
+            <span class="inline-block font-semibold text-xs px-2 py-0.5 rounded-full
               {% if diff > 10 %}bg-green-100 text-green-700
               {% elif diff < -10 %}bg-red-100 text-red-700
               {% else %}bg-yellow-100 text-yellow-700{% endif %}">
@@ -101,16 +126,16 @@
           {% endif %}
         </td>
         {% endfor %}
-        <td class="px-4 py-3 text-center">
+        <td class="px-3 py-2 text-center">
           {% set pos = row[6] %}
           {% if pos == 'above_market' %}
-            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">SB Cheaper</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 whitespace-nowrap">SB Cheaper</span>
           {% elif pos == 'near_market' %}
-            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">Near Market</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700 whitespace-nowrap">Near Market</span>
           {% elif pos == 'below_market' %}
-            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">SB Pricier</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700 whitespace-nowrap">SB Pricier</span>
           {% else %}
-            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-500">No Data</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500 whitespace-nowrap">No Data</span>
           {% endif %}
         </td>
       </tr>
@@ -125,33 +150,70 @@
 </div>
 
 <!-- Legend -->
-<div class="mt-4 flex flex-wrap items-center gap-4 text-xs text-gray-500">
-  <span class="font-semibold text-gray-600">How to read the % columns:</span>
-  <span class="flex items-center gap-1.5">
+<div class="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-500">
+  <span class="font-semibold text-gray-600">% = competitor price vs SB:</span>
+  <span class="flex items-center gap-1">
     <span class="inline-block bg-green-100 text-green-700 font-semibold px-2 py-0.5 rounded-full">+15%</span>
-    Competitor charges more — SB is cheaper
+    Competitor charges more (SB cheaper)
   </span>
-  <span class="flex items-center gap-1.5">
+  <span class="flex items-center gap-1">
     <span class="inline-block bg-yellow-100 text-yellow-700 font-semibold px-2 py-0.5 rounded-full">-5%</span>
-    Within 10% — roughly the same price
+    Within ±10% (similar price)
   </span>
-  <span class="flex items-center gap-1.5">
+  <span class="flex items-center gap-1">
     <span class="inline-block bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">-30%</span>
-    Competitor charges less — SB is pricier
+    Competitor charges less (SB pricier)
   </span>
-  <span class="flex items-center gap-1.5">
-    <span class="text-gray-300 font-semibold">—</span>
-    No price data for this competitor
-  </span>
+  <span class="flex items-center gap-1 text-gray-300 font-semibold">— <span class="text-gray-400 font-normal">No match found</span></span>
 </div>
 
 <script>
-document.getElementById('searchBox').addEventListener('input', function() {
-  const q = this.value.toLowerCase().trim();
+let activeType = 'all';
+let activeSearch = '';
+
+function updateVisible() {
+  let count = 0;
   document.querySelectorAll('.product-row').forEach(row => {
-    const name = row.getAttribute('data-name') || '';
-    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+    const name = row.dataset.name || '';
+    const type = row.dataset.type || '';
+
+    const matchesSearch = !activeSearch || name.includes(activeSearch);
+    const matchesType = activeType === 'all' || typeMatches(type, activeType);
+
+    const show = matchesSearch && matchesType;
+    row.style.display = show ? '' : 'none';
+    if (show) count++;
   });
+  document.getElementById('visibleCount').textContent = count;
+}
+
+// Map filter button values to product_type substrings
+function typeMatches(productType, filter) {
+  const t = productType.toLowerCase();
+  if (filter === 'succulents') return t.includes('succulent');
+  if (filter === 'cacti')      return t.includes('cacti') || t.includes('cactus');
+  if (filter === 'air plants') return t.includes('air plant') || t.includes('tillandsia');
+  if (filter === 'houseplants') return t.includes('houseplant') || t.includes('house plant')
+                                    || t.includes('tropical') || t.includes('fern')
+                                    || t.includes('pothos') || t.includes('philodendron');
+  return true;
+}
+
+function filterType(type) {
+  activeType = type;
+  document.querySelectorAll('.type-btn').forEach(btn => {
+    const isActive = btn.dataset.type === type;
+    btn.className = 'type-btn text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ' +
+      (isActive
+        ? 'border-brand-300 bg-brand-600 text-white'
+        : 'border-gray-300 bg-white text-gray-600 hover:border-brand-400');
+  });
+  updateVisible();
+}
+
+document.getElementById('searchBox').addEventListener('input', function() {
+  activeSearch = this.value.toLowerCase().trim();
+  updateVisible();
 });
 
 function sortTable(colIndex, type) {
