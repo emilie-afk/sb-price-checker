@@ -252,6 +252,24 @@ def synonym_group_ids(title):
     return hits
 
 
+def synonym_keywords(title):
+    """Return all meaningful words from every synonym group this title belongs to.
+
+    Use this to expand a product title's search terms so that common-name titles
+    (e.g. "Burro's Tail") also search against scientific-name index entries
+    (e.g. "sedum", "morganianum").
+    """
+    import re as _re
+    gids = synonym_group_ids(title)
+    words = set()
+    for gid in gids:
+        for phrase in SYNONYM_GROUPS[gid]:
+            for w in _re.findall(r'[a-z]+', phrase):
+                if len(w) >= 4:
+                    words.add(w)
+    return words
+
+
 def shares_synonym_group(title_a, title_b):
     """Return True if both titles refer to the same plant via synonym lookup."""
     groups_a = synonym_group_ids(title_a)

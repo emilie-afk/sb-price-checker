@@ -2,7 +2,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
-from app.plant_names import shares_synonym_group
+from app.plant_names import shares_synonym_group, synonym_keywords
 
 # Words that don't help distinguish plant species
 STOP_WORDS = {
@@ -168,11 +168,15 @@ def run_matching(db_conn, plant_types=None, sources=None):
             for r in sb_variants_rows
         ]
 
-        # Find candidates via keyword index
+        # Find candidates via keyword index.
+        # Also include synonym words so "Burro's Tail" finds "sedum morganianum" entries.
         search_terms = _keyword_search_terms(sb_title)
+        extra_terms = synonym_keywords(sb_title)  # scientific/alt names from synonym groups
+        all_terms = list(dict.fromkeys(search_terms + list(extra_terms)))  # deduplicated, original order first
+
         seen_variant_ids = set()
         candidates_raw = []
-        for term in search_terms[:4]:
+        for term in all_terms[:8]:  # increased from 4 to 8 to cover synonym expansions
             for row in keyword_index.get(term, []):
                 vid = row[4]
                 if vid not in seen_variant_ids and (sb_id, vid) not in existing_matches:
