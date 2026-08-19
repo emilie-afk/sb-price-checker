@@ -15,7 +15,7 @@ STOP_WORDS = {
 }
 
 # Minimum score to accept a match — everything below is skipped, nothing goes to review
-ACCEPT_THRESHOLD = 72
+ACCEPT_THRESHOLD = 82
 
 
 def _closest_sb_price(sb_variants, comp_variant_title):
