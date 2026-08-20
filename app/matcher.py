@@ -39,6 +39,16 @@ def is_comparable_plant(title, product_type=None):
     t = (title or '').lower()
     if any(kw in t for kw in EXCLUDE_KEYWORDS):
         return False
+    # Multi-packs written as a quantity: '3-pack', '2 pack', 'set of 3',
+    # 'pack of 2', '3 pc', 'trio of', 'x2'
+    if re.search(r'\b\d+\s*[-–]?\s*(pack|pk|pc|pcs|piece|count|ct)\b', t):
+        return False
+    if re.search(r'\b(pack|set|box|bundle|lot|trio|duo|pair)\s+of\s+\d+', t):
+        return False
+    if re.search(r'\b(trio|duo)\b', t):
+        return False
+    if re.search(r'\bx\s?\d+\b', t):
+        return False
     pt = (product_type or '').lower()
     if any(kw in pt for kw in ('gift', 'accessor', 'supply', 'supplies', 'tool',
                                 'pot', 'planter', 'subscription', 'book')):
