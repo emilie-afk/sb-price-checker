@@ -259,12 +259,29 @@
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div class="flex-1 min-w-0">
       <h2 class="text-lg font-semibold text-amber-800 mb-1">Mountain Crest Gardens — Local Worker</h2>
-      <p class="text-sm text-amber-700 mb-2">MCG's Cloudflare blocks Render's servers. Queue a scrape here, then run this in PowerShell:</p>
-      <div class="flex items-center gap-2 mb-4">
-        <code id="mcgCmd" class="bg-amber-100 px-2.5 py-1.5 rounded font-mono text-xs text-amber-900 select-all break-all">cd "C:\Users\phuon\Documents\Tho\Succulent Box\2026\Jun 2026\Competitor Price Checker"; python mcg_worker.py</code>
+      {% set has_full_cmd = mcg_worker_cmd.startswith('cd ') %}
+      <p class="text-sm text-amber-700 mb-1">MCG's Cloudflare blocks Render's servers, so this scrape runs on your own computer.</p>
+      <p class="text-sm text-amber-700 mb-2">
+        {% if has_full_cmd %}
+          Copy this and paste it into PowerShell:
+        {% else %}
+          Open PowerShell <span class="font-medium">in your project folder</span>, then run:
+        {% endif %}
+      </p>
+      <div class="flex items-center gap-2 mb-2">
+        <code id="mcgCmd" class="bg-amber-100 px-2.5 py-1.5 rounded font-mono text-xs text-amber-900 break-all flex-1 min-w-0">{{ mcg_worker_cmd }}</code>
         <button id="mcgCopyBtn" onclick="copyMcgCmd()"
           class="shrink-0 text-xs bg-amber-200 hover:bg-amber-300 text-amber-800 font-medium px-2 py-1 rounded transition-colors">Copy</button>
       </div>
+      {% if not has_full_cmd %}
+      <p class="text-xs text-amber-600 mb-4">
+        Tip: in File Explorer, open the project folder, type <code class="font-mono bg-amber-100 px-1 rounded">powershell</code>
+        in the address bar and press Enter — it opens already pointed at that folder.
+        <br>To show the full one-liner here instead, set <code class="font-mono bg-amber-100 px-1 rounded">MCG_WORKER_DIR</code> in your Render environment variables.
+      </p>
+      {% else %}
+      <div class="mb-4"></div>
+      {% endif %}
       <div class="flex items-center gap-3 flex-wrap">
         <button id="mcgBtn" onclick="triggerMcg()"
           class="bg-amber-600 hover:bg-amber-700 text-white font-semibold px-5 py-2.5 rounded-lg transition-colors">
@@ -659,9 +676,17 @@ async function runMatch(clearPending = false) {
           msg.classList.remove('hidden');
           msg.className = 'mt-3 text-sm text-green-600 bg-green-50 rounded p-2';
           const res = task.result || {};
-          const delPart = res.deleted ? `Deleted ${res.deleted} old · ` : '';
-          msg.textContent = `✓ Done! ${delPart}Matched: ${res.matched || 0}, Skipped: ${res.skipped || 0}`;
-          setTimeout(() => location.reload(), 2500);
+          const delPart = res.deleted ? `Deleted ${res.deleted} old. ` : '';
+          msg.innerHTML =
+            `<div class="font-semibold">✓ ${delPart}Matched ${res.matched || 0} pairs</div>`
+          + `<div class="text-xs mt-1 text-gray-600">`
+          + `${res.exact || 0} same-size &middot; ${res.entry || 0} entry-price`
+          + `<br>Skipped: ${res.skipped_name || 0} name mismatch, `
+          + `${res.skipped_size || 0} size we don't stock, `
+          + `${res.skipped_outlier || 0} price outlier`
+          + (res.excluded_products ? `<br>${res.excluded_products} products excluded (arrangements/bundles)` : '')
+          + `</div>`;
+          setTimeout(() => location.reload(), 6000);
         } else if (task.status === 'error') {
           clearInterval(poll);
           progressEl.classList.add('hidden');
@@ -679,13 +704,32 @@ async function runMatch(clearPending = false) {
   }
 }
 
+// The command is served by the app (MCG_WORKER_CMD env var, defaulting to a
+// path-free command) so no local folder path is ever sent to the browser.
 function copyMcgCmd() {
-  const cmd = document.getElementById('mcgCmd').textContent;
-  navigator.clipboard.writeText(cmd).then(() => {
-    const btn = document.getElementById('mcgCopyBtn');
+  const cmd = document.getElementById('mcgCmd').textContent.trim();
+  const btn = document.getElementById('mcgCopyBtn');
+  const done = () => {
     btn.textContent = '✓ Copied';
     setTimeout(() => btn.textContent = 'Copy', 2000);
-  });
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(cmd).then(done).catch(() => fallbackCopy(cmd, done));
+  } else {
+    fallbackCopy(cmd, done);
+  }
+}
+
+// Fallback for browsers/contexts where the async clipboard API is unavailable
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { alert('Copy failed'); }
+  document.body.removeChild(ta);
 }
 
 async function triggerMcg() {

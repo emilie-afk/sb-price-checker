@@ -92,6 +92,7 @@
       {% for row in products %}
       {# row: 0=id, 1=title, 2=product_type, 3=price_min, 4=price_max, 5=accepted, 6=position, 7=min_diff #}
       {% set diffs = source_diffs.get(row[0], {}) %}
+      {% set exacts = source_exact.get(row[0], {}) %}
       <tr class="border-b border-gray-100 hover:bg-gray-50 transition-colors product-row"
           data-name="{{ row[1]|lower }}"
           data-type="{{ (row[2] or '')|lower }}">
@@ -115,11 +116,13 @@
         {% set diff = diffs.get(src_key) %}
         <td class="px-3 py-2 text-center" data-val="{{ diff if diff is not none else '' }}">
           {% if diff is not none %}
+            {% set is_exact = exacts.get(src_key, false) %}
             <span class="inline-block font-semibold text-xs px-2 py-0.5 rounded-full
               {% if diff > 10 %}bg-green-100 text-green-700
               {% elif diff < -10 %}bg-red-100 text-red-700
-              {% else %}bg-yellow-100 text-yellow-700{% endif %}">
-              {% if diff > 0 %}+{% endif %}{{ "%.0f"|format(diff) }}%
+              {% else %}bg-yellow-100 text-yellow-700{% endif %}"
+              title="{% if is_exact %}Same-size comparison{% else %}Approximate — competitor lists no size, entry prices compared{% endif %}">
+              {% if diff > 0 %}+{% endif %}{{ "%.0f"|format(diff) }}%{% if not is_exact %}<span class="opacity-60">~</span>{% endif %}
             </span>
           {% else %}
             <span class="text-gray-300 text-xs">—</span>
@@ -165,6 +168,10 @@
     Competitor charges less (SB pricier)
   </span>
   <span class="flex items-center gap-1 text-gray-300 font-semibold">— <span class="text-gray-400 font-normal">No match found</span></span>
+  <span class="flex items-center gap-1">
+    <span class="inline-block bg-gray-100 text-gray-600 font-semibold px-2 py-0.5 rounded-full">-12%<span class="opacity-60">~</span></span>
+    <span class="text-gray-400 font-normal">~ = approximate (competitor lists no size, entry prices compared)</span>
+  </span>
 </div>
 
 <script>
