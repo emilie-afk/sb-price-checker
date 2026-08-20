@@ -301,9 +301,20 @@ def sync_sb_products(db_conn):
     else:
         print(f"[sync_sb] first run — fetched {len(raw_products)} products from succulentsbox.com", flush=True)
 
+    # ---------------------------------------------------------------- #
+    # Bulk sync: a handful of queries instead of ~2 per product.        #
+    # Every product previously cost an INSERT..RETURNING plus a SELECT, #
+    # so 1,000 products meant 2,000+ round-trips to Supabase.           #
+    # ---------------------------------------------------------------- #
+
+    # 1. Build the product rows in memory
+    product_rows = []      # (external_id, title, handle, ptype, url, min, max, in_stock)
+    variants_by_ext = {}   # product external_id -> list of variant dicts
     for i, raw in enumerate(raw_products):
         try:
             external_id = str(raw.get('id', ''))
+            if not external_id:
+                continue
             title = raw.get('title', '').strip()
             handle = raw.get('handle', '')
             product_type = raw.get('product_type', '')
@@ -315,92 +326,118 @@ def sync_sb_products(db_conn):
             # compared on, and including it produced bogus price diffs
             # (e.g. a sold-out $215 Hoya being compared against competitors).
             in_stock_prices = []
-            all_prices = []
             for v in variants:
                 try:
                     p = float(v.get('price', 0))
                 except (ValueError, TypeError):
                     continue
-                if p <= 0:
-                    continue
-                all_prices.append(p)
-                if v.get('available', True):
+                if p > 0 and v.get('available', True):
                     in_stock_prices.append(p)
 
-            prices = in_stock_prices  # prefer in-stock only
-            price_min = min(prices) if prices else 0
-            price_max = max(prices) if prices else 0
+            price_min = min(in_stock_prices) if in_stock_prices else 0
+            price_max = max(in_stock_prices) if in_stock_prices else 0
             # in_stock = 0 means every variant is sold out → hidden from reports
             in_stock = 1 if in_stock_prices else 0
 
-            # Upsert product, get id back
-            row = cursor.execute('''
-                INSERT INTO sb_products (external_id, title, handle, product_type, url,
-                                         price_min, price_max, in_stock, synced_at, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(external_id) DO UPDATE SET
-                    title=EXCLUDED.title,
-                    handle=EXCLUDED.handle,
-                    product_type=EXCLUDED.product_type,
-                    url=EXCLUDED.url,
-                    price_min=EXCLUDED.price_min,
-                    price_max=EXCLUDED.price_max,
-                    in_stock=EXCLUDED.in_stock,
-                    synced_at=EXCLUDED.synced_at
-                RETURNING id
-            ''', (external_id, title, handle, product_type, url,
-                  price_min, price_max, in_stock, now, now)).fetchone()
-            product_id = row[0]
-
-            # Load existing variants for this product (one SELECT per product)
-            existing_rows = cursor.execute(
-                'SELECT id, external_variant_id, price FROM sb_variants WHERE product_id=%s',
-                (product_id,)
-            ).fetchall()
-            existing = {r[1]: (r[0], r[2]) for r in existing_rows}
-
-            new_variants = []
-            for v in variants:
-                ext_variant_id = str(v.get('id', ''))
-                variant_title = v.get('title', '')
-                try:
-                    price = float(v.get('price', 0))
-                except (ValueError, TypeError):
-                    price = 0.0
-                available = 1 if v.get('available', True) else 0
-                sku = v.get('sku', '')
-
-                if ext_variant_id in existing:
-                    # Only update if price changed
-                    variant_id, old_price = existing[ext_variant_id]
-                    if price != old_price:
-                        cursor.execute(
-                            'UPDATE sb_variants SET price=%s, available=%s WHERE id=%s',
-                            (price, available, variant_id)
-                        )
-                        price_changes += 1
-                else:
-                    new_variants.append((ext_variant_id, variant_title, price, available, sku))
-
-            if new_variants:
-                if not existing:
-                    new_products += 1
-                ph = ', '.join(['(%s, %s, %s, %s, %s, %s, %s)'] * len(new_variants))
-                flat = [val for v in new_variants
-                        for val in (product_id, v[0], v[1], v[2], v[3], v[4], now)]
-                cursor.execute(
-                    f'INSERT INTO sb_variants (product_id, external_variant_id, variant_title, price, available, sku, created_at) VALUES {ph} ON CONFLICT(external_variant_id) DO NOTHING',
-                    flat
-                )
-
-            if (i + 1) % 50 == 0:
-                db_conn.commit()
-                print(f"[sync_sb] {i + 1}/{len(raw_products)} done — "
-                      f"{new_products} new, {price_changes} price changes so far", flush=True)
-
+            product_rows.append((external_id, title, handle, product_type, url,
+                                 price_min, price_max, in_stock))
+            variants_by_ext[external_id] = variants
         except Exception as e:
-            print(f"[sync_sb] error on product {i}: {e}", flush=True)
+            print(f"[sync_sb] error preparing product {i}: {e}", flush=True)
             errors += 1
+
+    if not product_rows:
+        print('[sync_sb] nothing to sync', flush=True)
+        return {'synced': 0, 'new': 0, 'price_changes': 0, 'errors': errors}
+
+    # 2. Bulk upsert products in chunks, getting external_id -> id back
+    ext_to_id = {}
+    CHUNK = 200
+    for start in range(0, len(product_rows), CHUNK):
+        chunk = product_rows[start:start + CHUNK]
+        ph = ', '.join(['(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'] * len(chunk))
+        flat = [val for r in chunk for val in (*r, now, now)]
+        rows = cursor.execute(f'''
+            INSERT INTO sb_products (external_id, title, handle, product_type, url,
+                                     price_min, price_max, in_stock, synced_at, created_at)
+            VALUES {ph}
+            ON CONFLICT(external_id) DO UPDATE SET
+                title=EXCLUDED.title,
+                handle=EXCLUDED.handle,
+                product_type=EXCLUDED.product_type,
+                url=EXCLUDED.url,
+                price_min=EXCLUDED.price_min,
+                price_max=EXCLUDED.price_max,
+                in_stock=EXCLUDED.in_stock,
+                synced_at=EXCLUDED.synced_at
+            RETURNING id, external_id
+        ''', flat).fetchall()
+        for r in rows:
+            ext_to_id[str(r[1])] = r[0]
+        print(f'[sync_sb] upserted {min(start + CHUNK, len(product_rows))}/{len(product_rows)} products',
+              flush=True)
+    db_conn.commit()
+
+    # 3. Load ALL existing variants for these products in one query
+    product_ids = list(ext_to_id.values())
+    existing = {}   # external_variant_id -> (id, price, available)
+    for start in range(0, len(product_ids), 500):
+        chunk = product_ids[start:start + 500]
+        ph = ','.join(['%s'] * len(chunk))
+        for r in cursor.execute(
+            f'SELECT id, external_variant_id, price, available FROM sb_variants WHERE product_id IN ({ph})',
+            chunk
+        ).fetchall():
+            existing[str(r[1])] = (r[0], r[2], r[3])
+
+    # 4. Sort every variant into "needs update" or "needs insert"
+    to_update = []   # (price, available, id)
+    to_insert = []   # (product_id, ext_id, title, price, available, sku, now)
+    for ext_pid, variants in variants_by_ext.items():
+        product_id = ext_to_id.get(ext_pid)
+        if not product_id:
+            continue
+        for v in variants:
+            ext_vid = str(v.get('id', ''))
+            if not ext_vid:
+                continue
+            try:
+                price = float(v.get('price', 0))
+            except (ValueError, TypeError):
+                price = 0.0
+            available = 1 if v.get('available', True) else 0
+            if ext_vid in existing:
+                vid, old_price, old_avail = existing[ext_vid]
+                # Update when price OR stock status changed
+                if price != old_price or available != old_avail:
+                    to_update.append((price, available, vid))
+                    if price != old_price:
+                        price_changes += 1
+            else:
+                to_insert.append((product_id, ext_vid, v.get('title', ''),
+                                  price, available, v.get('sku', ''), now))
+
+    # 5. Apply all variant changes in batches
+    if to_update:
+        cursor._cur.executemany(
+            'UPDATE sb_variants SET price=%s, available=%s WHERE id=%s', to_update
+        )
+        print(f'[sync_sb] updated {len(to_update)} variants', flush=True)
+
+    if to_insert:
+        for start in range(0, len(to_insert), CHUNK):
+            chunk = to_insert[start:start + CHUNK]
+            ph = ', '.join(['(%s,%s,%s,%s,%s,%s,%s)'] * len(chunk))
+            flat = [val for v in chunk for val in v]
+            cursor.execute(
+                f'INSERT INTO sb_variants (product_id, external_variant_id, variant_title, '
+                f'price, available, sku, created_at) VALUES {ph} '
+                f'ON CONFLICT(external_variant_id) DO NOTHING', flat
+            )
+        print(f'[sync_sb] inserted {len(to_insert)} new variants', flush=True)
+
+    # A product is "new" if we just created its first variants
+    new_products = len({v[0] for v in to_insert})
 
     db_conn.commit()
     msg = f'{len(raw_products)} products checked, {new_products} new, {price_changes} price changes'
@@ -491,14 +528,42 @@ def run_collection(db_conn, sources=None):
             new_products = 0
             price_changes = 0
 
-            for i, raw in enumerate(raw_products):
-                product, variants = parse_product(raw, source_key)
+            # ------------------------------------------------------------ #
+            # Bulk collection: a handful of queries instead of ~2 per      #
+            # product. Previously each product cost an INSERT..RETURNING   #
+            # plus a SELECT, so 900 products meant 1,800+ round-trips.     #
+            # ------------------------------------------------------------ #
+            CHUNK = 200
 
-                # Upsert product metadata, get id back in one round trip
-                row = cursor.execute('''
+            # 1. Parse everything into memory first
+            prod_rows = []           # tuples for the products insert
+            variants_by_ext = {}     # product external_id -> [variant dicts]
+            for raw in raw_products:
+                product, variants = parse_product(raw, source_key)
+                ext = product['external_id']
+                if not ext:
+                    continue
+                prod_rows.append((
+                    product['source'], ext, product['title'], product['handle'],
+                    product['product_type'], product['description'],
+                    product['url'], product['image_url'], now,
+                ))
+                variants_by_ext[ext] = variants
+
+            if not prod_rows:
+                print(f'[collect] {source_key}: nothing to write', flush=True)
+                raise RuntimeError(f'{source_key} returned 0 usable products')
+
+            # 2. Bulk upsert products, getting external_id -> id back
+            ext_to_id = {}
+            for start in range(0, len(prod_rows), CHUNK):
+                chunk = prod_rows[start:start + CHUNK]
+                ph = ', '.join(['(%s,%s,%s,%s,%s,%s,%s,%s,%s)'] * len(chunk))
+                flat = [val for r in chunk for val in r]
+                for r in cursor.execute(f'''
                     INSERT INTO competitor_products
                     (source, external_id, title, handle, product_type, description, url, image_url, collected_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES {ph}
                     ON CONFLICT(source, external_id) DO UPDATE SET
                         title=EXCLUDED.title,
                         product_type=EXCLUDED.product_type,
@@ -506,72 +571,84 @@ def run_collection(db_conn, sources=None):
                         url=EXCLUDED.url,
                         image_url=EXCLUDED.image_url,
                         collected_at=EXCLUDED.collected_at
-                    RETURNING id
-                ''', (product['source'], product['external_id'], product['title'],
-                      product['handle'], product['product_type'], product['description'],
-                      product['url'], product['image_url'], now)).fetchone()
+                    RETURNING id, external_id
+                ''', flat).fetchall():
+                    ext_to_id[str(r[1])] = r[0]
+                print(f'[collect] {source_key}: upserted '
+                      f'{min(start + CHUNK, len(prod_rows))}/{len(prod_rows)} products', flush=True)
+            db_conn.commit()
 
-                if not row:
+            # 3. Load ALL existing variants for these products in one pass
+            product_ids = list(ext_to_id.values())
+            existing = {}   # external_variant_id -> (db_id, stored_price)
+            for start in range(0, len(product_ids), 500):
+                chunk = product_ids[start:start + 500]
+                ph = ','.join(['%s'] * len(chunk))
+                for r in cursor.execute(
+                    f'SELECT id, external_variant_id, price FROM competitor_variants '
+                    f'WHERE product_id IN ({ph})', chunk
+                ).fetchall():
+                    existing[str(r[1])] = (r[0], r[2])
+
+            # 4. Sort every variant into update vs insert
+            to_update = []    # (price, available, now, id)
+            snap_rows = []    # (variant_id, price, available, now) for known ids
+            to_insert = []    # (product_id, ext_vid, title, price, available, sku, now)
+            new_meta = {}     # ext_vid -> (price, available) for snapshot after insert
+            for ext_pid, variants in variants_by_ext.items():
+                product_id = ext_to_id.get(ext_pid)
+                if not product_id:
                     continue
-                product_id = row[0]
-
-                # Load existing variants for this product (one SELECT per product)
-                existing_rows = cursor.execute(
-                    'SELECT id, external_variant_id, price FROM competitor_variants WHERE product_id=%s',
-                    (product_id,)
-                ).fetchall()
-                # ext_variant_id -> (db_id, stored_price)
-                existing = {r[1]: (r[0], r[2]) for r in existing_rows}
-
-                new_variants = []
                 for v in variants:
-                    ext_id = v['external_variant_id']
-                    if ext_id in existing:
-                        # Existing variant — only write if price changed
-                        variant_id, old_price = existing[ext_id]
+                    ext_vid = str(v['external_variant_id'])
+                    if not ext_vid:
+                        continue
+                    if ext_vid in existing:
+                        vid, old_price = existing[ext_vid]
                         if v['price'] != old_price:
-                            cursor.execute(
-                                'UPDATE competitor_variants SET price=%s, available=%s, collected_at=%s WHERE id=%s',
-                                (v['price'], v['available'], now, variant_id)
-                            )
-                            cursor.execute(
-                                'INSERT INTO price_snapshots (variant_id, price, available, captured_at) VALUES (%s, %s, %s, %s)',
-                                (variant_id, v['price'], v['available'], now)
-                            )
+                            to_update.append((v['price'], v['available'], now, vid))
+                            snap_rows.append((vid, v['price'], v['available'], now))
                             price_changes += 1
                     else:
-                        new_variants.append(v)
+                        to_insert.append((product_id, ext_vid, v['variant_title'],
+                                          v['price'], v['available'], v['sku'], now))
+                        new_meta[ext_vid] = (v['price'], v['available'])
 
-                if new_variants:
-                    if not existing:
-                        new_products += 1  # fully new product
-                    # Batch insert new variants, get ids back
-                    ph = ', '.join(['(%s, %s, %s, %s, %s, %s, %s)'] * len(new_variants))
-                    flat = [val for v in new_variants for val in (
-                        product_id, v['external_variant_id'], v['variant_title'],
-                        v['price'], v['available'], v['sku'], now
-                    )]
-                    new_ids = [r[0] for r in cursor.execute(
-                        f'INSERT INTO competitor_variants (product_id, external_variant_id, variant_title, price, available, sku, collected_at) VALUES {ph} RETURNING id',
-                        flat
-                    ).fetchall()]
+            # 5. Apply price updates in one batch
+            if to_update:
+                cursor._cur.executemany(
+                    'UPDATE competitor_variants SET price=%s, available=%s, collected_at=%s WHERE id=%s',
+                    to_update
+                )
+                print(f'[collect] {source_key}: updated {len(to_update)} prices', flush=True)
 
-                    # Batch insert initial price snapshots for new variants
-                    if new_ids:
-                        snap_ph = ', '.join(['(%s, %s, %s, %s)'] * len(new_ids))
-                        snap_vals = [val for vid, v in zip(new_ids, new_variants)
-                                     for val in (vid, v['price'], v['available'], now)]
-                        cursor.execute(
-                            f'INSERT INTO price_snapshots (variant_id, price, available, captured_at) VALUES {snap_ph}',
-                            snap_vals
-                        )
+            # 6. Insert new variants, collecting their ids for snapshots
+            for start in range(0, len(to_insert), CHUNK):
+                chunk = to_insert[start:start + CHUNK]
+                ph = ', '.join(['(%s,%s,%s,%s,%s,%s,%s)'] * len(chunk))
+                flat = [val for v in chunk for val in v]
+                for r in cursor.execute(
+                    f'INSERT INTO competitor_variants (product_id, external_variant_id, '
+                    f'variant_title, price, available, sku, collected_at) VALUES {ph} '
+                    f'RETURNING id, external_variant_id', flat
+                ).fetchall():
+                    meta = new_meta.get(str(r[1]))
+                    if meta:
+                        snap_rows.append((r[0], meta[0], meta[1], now))
+            if to_insert:
+                print(f'[collect] {source_key}: inserted {len(to_insert)} new variants', flush=True)
 
-                # Commit and log progress every 50 products
-                if (i + 1) % 50 == 0:
-                    db_conn.commit()
-                    print(f"[collect] {source_key}: {i + 1}/{len(raw_products)} done — "
-                          f"{new_products} new, {price_changes} price changes so far", flush=True)
+            # 7. Write all price snapshots in batches
+            for start in range(0, len(snap_rows), CHUNK):
+                chunk = snap_rows[start:start + CHUNK]
+                ph = ', '.join(['(%s,%s,%s,%s)'] * len(chunk))
+                flat = [val for s in chunk for val in s]
+                cursor.execute(
+                    f'INSERT INTO price_snapshots (variant_id, price, available, captured_at) '
+                    f'VALUES {ph}', flat
+                )
 
+            new_products = len({v[0] for v in to_insert})
             db_conn.commit()
             msg = f'{len(raw_products)} products checked, {new_products} new, {price_changes} price changes'
             print(f"[collect] {source_key}: {msg}", flush=True)
