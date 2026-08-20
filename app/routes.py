@@ -240,16 +240,26 @@ def products():
     # Per-competitor avg diff: product_id -> {source_key: avg_diff}
     # Also track whether any of those matches was an exact same-size comparison,
     # so the table can mark entry-price rows as approximate.
+    # When a competitor lists the same plant more than once (e.g. a regular and
+    # a '[large]' listing), averaging them is misleading. Prefer same-size
+    # ('exact') matches and ignore the approximate ones whenever both exist.
     source_diffs_rows = db.execute('''
-        SELECT m.sb_product_id, cp.source, AVG(m.price_diff_pct) as avg_diff,
-               MAX(CASE WHEN m.relationship='exact' THEN 1 ELSE 0 END) as has_exact
-        FROM matches m
-        JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
-        JOIN competitor_products cp ON cp.id = cv.product_id
-        JOIN sb_products p ON p.id = m.sb_product_id
-        WHERE m.status='accepted' AND m.price_diff_pct IS NOT NULL
-          AND COALESCE(p.in_stock, 1) = 1
-        GROUP BY m.sb_product_id, cp.source
+        WITH ranked AS (
+            SELECT m.sb_product_id, cp.source, m.price_diff_pct, m.relationship,
+                   MAX(CASE WHEN m.relationship='exact' THEN 1 ELSE 0 END)
+                     OVER (PARTITION BY m.sb_product_id, cp.source) AS src_has_exact
+            FROM matches m
+            JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
+            JOIN competitor_products cp ON cp.id = cv.product_id
+            JOIN sb_products p ON p.id = m.sb_product_id
+            WHERE m.status='accepted' AND m.price_diff_pct IS NOT NULL
+              AND COALESCE(p.in_stock, 1) = 1
+        )
+        SELECT sb_product_id, source, AVG(price_diff_pct) as avg_diff,
+               MAX(src_has_exact) as has_exact
+        FROM ranked
+        WHERE src_has_exact = 0 OR relationship = 'exact'
+        GROUP BY sb_product_id, source
     ''').fetchall()
 
     source_diffs = {}    # product_id -> {source_key: diff}
