@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Size Gaps{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Size Coverage &amp; Gaps</h1>
+  <p class="text-gray-500 text-sm mt-1">
+    For each matched plant: which pot sizes we stock vs what competitors stock.
+  </p>
+</div>
+
+{% if comp_variants_sized == 0 %}
+<div class="bg-yellow-50 border border-yellow-200 rounded-xl p-5 mb-6">
+  <p class="text-sm text-yellow-800 font-semibold mb-1">No size data found</p>
+  <p class="text-sm text-yellow-700">
+    None of the {{ comp_variants_seen }} matched competitor variants have a readable size
+    in their titles, so no comparison is possible. Competitors that sell one size per
+    product page often don't put the size in the variant name.
+  </p>
+</div>
+{% else %}
+<p class="text-xs text-gray-400 mb-6">
+  Size detected on {{ comp_variants_sized }} of {{ comp_variants_seen }} matched competitor variants
+  ({{ (comp_variants_sized / comp_variants_seen * 100) | round | int }}%).
+</p>
+{% endif %}
+
+<!-- Two-direction summary -->
+<div class="grid md:grid-cols-2 gap-4 mb-8">
+  <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+    <h2 class="text-sm font-semibold text-gray-800 mb-1">Sizes competitors offer that we don't</h2>
+    <p class="text-xs text-gray-400 mb-3">Potential range to add — count = number of plants affected</p>
+    {% if missing_for_us %}
+      <div class="space-y-2">
+        {% for size, count in missing_for_us %}
+        <div class="flex items-center gap-3">
+          <span class="font-mono text-sm font-semibold text-gray-700 w-14">{{ "%g"|format(size) }}"</span>
+          <div class="flex-1 bg-gray-100 rounded-full h-2.5">
+            <div class="bg-amber-500 h-2.5 rounded-full"
+                 style="width: {{ (count / missing_for_us[0][1] * 100) | round | int }}%"></div>
+          </div>
+          <span class="text-sm text-gray-500 w-20 text-right">{{ count }} plants</span>
+        </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-400 py-3">No gaps — we match or exceed competitor sizes everywhere.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+    <h2 class="text-sm font-semibold text-gray-800 mb-1">Sizes only we offer</h2>
+    <p class="text-xs text-gray-400 mb-3">Where we have no direct price competition</p>
+    {% if exclusive_to_us %}
+      <div class="space-y-2">
+        {% for size, count in exclusive_to_us %}
+        <div class="flex items-center gap-3">
+          <span class="font-mono text-sm font-semibold text-gray-700 w-14">{{ "%g"|format(size) }}"</span>
+          <div class="flex-1 bg-gray-100 rounded-full h-2.5">
+            <div class="bg-brand-500 h-2.5 rounded-full"
+                 style="width: {{ (count / exclusive_to_us[0][1] * 100) | round | int }}%"></div>
+          </div>
+          <span class="text-sm text-gray-500 w-20 text-right">{{ count }} plants</span>
+        </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-400 py-3">No sizes are exclusive to us.</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Size offering matrix -->
+{% if all_sizes %}
+<div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm mb-8 overflow-x-auto">
+  <h2 class="text-sm font-semibold text-gray-800 mb-1">Size range by retailer</h2>
+  <p class="text-xs text-gray-400 mb-3">Number of matched plants offered at each size</p>
+  <table class="text-sm">
+    <thead>
+      <tr class="border-b border-gray-200">
+        <th class="text-left pr-6 py-2 font-semibold text-gray-600">Retailer</th>
+        {% for s in all_sizes %}
+        <th class="px-3 py-2 font-semibold text-gray-600 font-mono whitespace-nowrap">{{ "%g"|format(s) }}"</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for label, counts in size_by_retailer.items() %}
+      <tr class="border-b border-gray-100 {% if label == 'Succulents Box' %}bg-brand-50/40 font-semibold{% endif %}">
+        <td class="pr-6 py-2 whitespace-nowrap {% if label == 'Succulents Box' %}text-brand-800{% else %}text-gray-700{% endif %}">
+          {{ label }}
+        </td>
+        {% for s in all_sizes %}
+        <td class="px-3 py-2 text-center">
+          {% set n = counts.get(s, 0) %}
+          {% if n %}
+            <span class="text-gray-700">{{ n }}</span>
+          {% else %}
+            <span class="text-gray-200">—</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Per-plant detail -->
+<div class="mb-3 flex items-center justify-between gap-3 flex-wrap">
+  <h2 class="text-lg font-semibold text-gray-800">
+    Per-plant detail <span class="text-sm font-normal text-gray-400">({{ rows|length }} plants, biggest gaps first)</span>
+  </h2>
+  <input id="searchBox" type="text" placeholder="Search plants…"
+    class="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 w-48">
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto" style="max-height:70vh; overflow-y:auto;">
+  <table class="w-full text-sm">
+    <thead class="bg-gray-50 border-b border-gray-200" style="position:sticky; top:0; z-index:10;">
+      <tr>
+        <th class="text-left px-4 py-3 font-semibold text-gray-600" style="min-width:200px;">Plant</th>
+        <th class="text-left px-3 py-3 font-semibold text-gray-600 whitespace-nowrap">Our sizes</th>
+        {% for src_key, src_label in competitors %}
+        <th class="text-left px-3 py-3 font-semibold text-gray-600 whitespace-nowrap">{{ src_label }}</th>
+        {% endfor %}
+        <th class="text-left px-3 py-3 font-semibold text-amber-700 whitespace-nowrap bg-amber-50">They have, we don't</th>
+        <th class="text-left px-3 py-3 font-semibold text-brand-700 whitespace-nowrap bg-brand-50">Only we have</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody">
+      {% for r in rows %}
+      <tr class="border-b border-gray-100 hover:bg-gray-50 gap-row" data-name="{{ r.title|lower }}">
+        <td class="px-4 py-2">
+          <a href="{{ url_for('main.product_detail', product_id=r.id) }}"
+             class="text-xs font-medium text-brand-700 hover:underline leading-snug block">{{ r.title }}</a>
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap">
+          {% for s in r.our_sizes %}
+          <span class="inline-block font-mono text-xs bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded mr-1">{{ "%g"|format(s) }}"</span>
+          {% endfor %}
+        </td>
+        {% for src_key, src_label in competitors %}
+        <td class="px-3 py-2 whitespace-nowrap">
+          {% set sizes = r.per_source.get(src_key) %}
+          {% if sizes %}
+            {% for s in sizes %}
+            <span class="inline-block font-mono text-xs px-1.5 py-0.5 rounded mr-1
+              {% if s in r.our_sizes %}bg-green-50 text-green-700{% else %}bg-amber-50 text-amber-700{% endif %}">{{ "%g"|format(s) }}"</span>
+            {% endfor %}
+          {% else %}
+            <span class="text-gray-300 text-xs">—</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+        <td class="px-3 py-2 whitespace-nowrap bg-amber-50/40">
+          {% if r.they_only %}
+            {% for s in r.they_only %}
+            <span class="inline-block font-mono text-xs font-semibold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded mr-1">{{ "%g"|format(s) }}"</span>
+            {% endfor %}
+          {% else %}<span class="text-gray-300 text-xs">—</span>{% endif %}
+        </td>
+        <td class="px-3 py-2 whitespace-nowrap bg-brand-50/40">
+          {% if r.we_only %}
+            {% for s in r.we_only %}
+            <span class="inline-block font-mono text-xs font-semibold bg-brand-100 text-brand-800 px-1.5 py-0.5 rounded mr-1">{{ "%g"|format(s) }}"</span>
+            {% endfor %}
+          {% else %}<span class="text-gray-300 text-xs">—</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not rows %}
+  <div class="py-12 text-center text-gray-400 text-sm">
+    No size comparisons available yet. Run Sync + Matching first.
+  </div>
+  {% endif %}
+</div>
+
+<div class="mt-3 flex flex-wrap items-center gap-4 text-xs text-gray-500">
+  <span class="flex items-center gap-1">
+    <span class="inline-block font-mono bg-green-50 text-green-700 px-1.5 py-0.5 rounded">4"</span>
+    Size we both offer — prices are comparable
+  </span>
+  <span class="flex items-center gap-1">
+    <span class="inline-block font-mono bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-semibold">6"</span>
+    They offer it, we don't
+  </span>
+  <span class="flex items-center gap-1">
+    <span class="inline-block font-mono bg-brand-100 text-brand-800 px-1.5 py-0.5 rounded font-semibold">2"</span>
+    Only we offer it
+  </span>
+</div>
+
+<script>
+document.getElementById('searchBox').addEventListener('input', function() {
+  const q = this.value.toLowerCase().trim();
+  document.querySelectorAll('.gap-row').forEach(row => {
+    row.style.display = (!q || (row.dataset.name || '').includes(q)) ? '' : 'none';
+  });
+});
+</script>
+{% endblock %}

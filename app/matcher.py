@@ -17,22 +17,81 @@ STOP_WORDS = {
 # Minimum score to accept a match — everything below is skipped, nothing goes to review
 ACCEPT_THRESHOLD = 82
 
+# Products that are not a single comparable plant. An arrangement or gift set
+# has no equivalent competitor product, so any price % would be meaningless.
+EXCLUDE_KEYWORDS = (
+    'arrangement', 'centerpiece', 'bouquet', 'wreath',
+    'set of', 'pack of', 'bundle', 'kit', 'collection',
+    'gift box', 'gift set', 'gift card', 'subscription',
+    'planter', 'pot only', 'container', 'terrarium',
+    'wedding', 'favor', 'party', 'birthday',
+    'soil', 'fertilizer', 'tool', 'book', 'sticker', 'candle',
+    'insurance', 'shipping', 'sample',
+)
 
-def _closest_sb_price(sb_variants, comp_variant_title):
-    if not sb_variants:
+
+def is_comparable_plant(title, product_type=None):
+    """False if this is an arrangement, gift set, bundle or non-plant item.
+
+    These are excluded from matching entirely — there is no equivalent
+    single-plant product at a competitor to compare them against.
+    """
+    t = (title or '').lower()
+    if any(kw in t for kw in EXCLUDE_KEYWORDS):
+        return False
+    pt = (product_type or '').lower()
+    if any(kw in pt for kw in ('gift', 'accessor', 'supply', 'supplies', 'tool',
+                                'pot', 'planter', 'subscription', 'book')):
+        return False
+    return True
+
+
+def extract_size(text):
+    """Extract pot/plant size in inches from a variant or product title.
+
+    Handles: '2 inch', '2"', '2in', '2.5"', '4 in pot'.
+    Returns a float (inches) or None if no size is present.
+    """
+    if not text:
         return None
-    comp_lower = (comp_variant_title or '').lower()
-    comp_size = re.search(r'(\d+)', comp_lower)
-    comp_num = comp_size.group(1) if comp_size else None
-    if comp_num:
-        for v in sb_variants:
-            if comp_num in str(v['variant_title']):
-                return v['price']
-    available = [v for v in sb_variants if v.get('available') and v['price'] > 0]
-    if available:
-        return min(available, key=lambda v: v['price'])['price']
-    prices = [v['price'] for v in sb_variants if v['price'] > 0]
-    return min(prices) if prices else None
+    t = text.lower()
+    m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|\'\'|inch|inches|in\b)', t)
+    if m:
+        try:
+            size = float(m.group(1))
+            # Sanity: plant pots are roughly 1"–14"
+            if 1 <= size <= 14:
+                return size
+        except ValueError:
+            pass
+    return None
+
+
+def _same_size_sb_price(sb_variants, comp_variant_title, comp_product_title=''):
+    """Return the SB price for the variant matching the competitor's size.
+
+    Returns (price, size) if a same-size in-stock SB variant exists,
+    otherwise (None, None) — the caller then skips the match rather than
+    comparing a 2" cutting against a 6" potted plant.
+    """
+    if not sb_variants:
+        return None, None
+
+    # Competitor size can be in the variant title or the product title
+    comp_size = extract_size(comp_variant_title) or extract_size(comp_product_title)
+    if comp_size is None:
+        return None, None
+
+    # Only in-stock SB variants with a real price are comparable
+    usable = [v for v in sb_variants if v.get('available') and v['price'] > 0]
+    if not usable:
+        return None, None
+
+    for v in usable:
+        if extract_size(v['variant_title']) == comp_size:
+            return v['price'], comp_size
+
+    return None, None
 
 
 def _keyword_search_terms(title):
@@ -43,6 +102,23 @@ def _keyword_search_terms(title):
 def _meaningful_words(title):
     return {w for w in re.findall(r'[a-z]+', title.lower())
             if len(w) >= 3 and w not in STOP_WORDS}
+
+
+# Latin species endings that vary between sellers for the same plant,
+# e.g. paradox/paradoxa, cooperi/cooperii, fasciata/fasciatus.
+_LATIN_ENDINGS = ('oides', 'ii', 'ae', 'us', 'um', 'is', 'a', 'i', 'e', 'o')
+
+
+def _latin_stem(word):
+    """Trim a variable Latin ending so 'paradox' and 'paradoxa' compare equal."""
+    for end in _LATIN_ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 5:
+            return word[:-len(end)]
+    return word
+
+
+def _stemmed_words(title):
+    return {_latin_stem(w) for w in _meaningful_words(title)}
 
 
 def _extract_cultivar(title):
@@ -87,11 +163,19 @@ def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
     # 3. Sequence ratio
     seq = SequenceMatcher(None, a, b).ratio()
 
-    # 4. Jaccard on meaningful words
+    # 4. Jaccard on meaningful words — computed twice, once on the raw words
+    #    and once on Latin-stemmed words, taking whichever agrees more. This
+    #    lets 'Rhipsalis Paradox' match 'Rhipsalis paradoxa'.
     wa = _meaningful_words(sb_title)
     wb = _meaningful_words(comp_title)
     union = wa | wb
     jaccard = len(wa & wb) / len(union) if union else 0
+
+    sa = _stemmed_words(sb_title)
+    sb_ = _stemmed_words(comp_title)
+    s_union = sa | sb_
+    if s_union:
+        jaccard = max(jaccard, len(sa & sb_) / len(s_union))
 
     # Combine: word overlap is the stronger signal for plant names
     score = (jaccard * 0.65 + seq * 0.35) * 100
@@ -189,15 +273,20 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
     for i, sb_row in enumerate(sb_products):
         sb_id, sb_title, sb_product_type = sb_row[0], sb_row[1], sb_row[2]
 
-        # Skip non-plant products
-        skip_types = {'gift cards', 'gift card'}
-        if (sb_product_type or '').lower() in skip_types:
-            continue
-        if any(w in sb_title.lower() for w in ('gift card', 'insurance', 'shipping')):
+        # Skip arrangements, gift sets, bundles and non-plant items —
+        # these have no comparable single-plant product at a competitor.
+        if not is_comparable_plant(sb_title, sb_product_type):
+            summary['skipped'] += 1
             continue
 
         # Fetch from pre-loaded in-memory dict (no extra DB query per product)
         sb_variants = sb_variants_by_product.get(sb_id, [])
+
+        # Skip products with nothing in stock — we can't be compared on a price
+        # we aren't actually selling at.
+        if not any(v.get('available') and v['price'] > 0 for v in sb_variants):
+            summary['skipped'] += 1
+            continue
 
         # Find candidates via keyword index.
         # Also include synonym words so "Burro's Tail" finds "sedum morganianum" entries.
@@ -232,30 +321,39 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
                 summary['skipped'] += 1
                 continue
 
-            status = 'accepted'
-            relationship = _determine_relationship(score, '', row[5])
+            # Competitor product must also be a single comparable plant
+            if not is_comparable_plant(row[1], row[2]):
+                summary['skipped'] += 1
+                continue
 
             comp_price = float(row[6] or 0)
-            sb_price = _closest_sb_price(sb_variants, row[5])
-            price_diff_pct = None
-            if sb_price and sb_price > 0 and comp_price > 0:
-                price_diff_pct = (comp_price - sb_price) / sb_price * 100
-                # Sanity check: >300% more expensive or >75% cheaper almost always
-                # means a size mismatch (e.g. 2" cutting vs 6" plant). Skip these.
-                if price_diff_pct < -75 or price_diff_pct > 300:
-                    summary['skipped'] += 1
-                    continue
-                if price_diff_pct > 10:
-                    market_pos = 'above_market'   # competitor costs more → SB cheaper
-                elif price_diff_pct < -10:
-                    market_pos = 'below_market'   # competitor costs less → SB pricier
-                else:
-                    market_pos = 'near_market'
-            else:
-                market_pos = 'unknown'
+            # Compare like-for-like size only. If the competitor has no size in
+            # its title, or we don't stock that size, skip rather than compare
+            # a 2" cutting against a 6" potted plant.
+            sb_price, matched_size = _same_size_sb_price(sb_variants, row[5], row[1])
+            if not sb_price or sb_price <= 0 or comp_price <= 0:
+                summary['skipped'] += 1
+                continue
 
-            method = 'synonym name match' if score == 88 else f'text similarity score {score}/100'
-            reasoning = f'Matched via {method}'
+            price_diff_pct = (comp_price - sb_price) / sb_price * 100
+            # Same size, so a wild diff now means a genuine outlier or a bad
+            # name match. Still guard against nonsense.
+            if price_diff_pct < -75 or price_diff_pct > 300:
+                summary['skipped'] += 1
+                continue
+
+            if price_diff_pct > 10:
+                market_pos = 'above_market'   # competitor costs more → SB cheaper
+            elif price_diff_pct < -10:
+                market_pos = 'below_market'   # competitor costs less → SB pricier
+            else:
+                market_pos = 'near_market'
+
+            status = 'accepted'
+            relationship = 'exact' if score >= 88 else 'comparable'
+
+            method = 'synonym name match' if score == 88 else f'text similarity {score}/100'
+            reasoning = f'Matched via {method} at {matched_size:g}" size'
 
             pending_inserts.append((
                 sb_id, row[4], relationship, score, status,
