@@ -177,8 +177,10 @@ SYNONYM_GROUPS = [
     {'pachyphytum oviferum', 'moonstones', 'sugared almonds plant'},
     {'stapelia grandiflora', 'starfish cactus', 'carrion plant', 'starfish plant'},
     {'rhipsalis', 'mistletoe cactus', 'chain cactus'},
-    {'disocactus', 'orchid cactus', 'fishbone cactus'},
-    {'epiphyllum', 'orchid cactus', 'leaf cactus', 'night blooming cereus'},
+    # 'orchid cactus' spans Disocactus and Epiphyllum, so it stays ambiguous
+    # on purpose. 'fishbone cactus' is handled by the species-level
+    # Selenicereus/Disocactus anthonyanus group further down.
+    {'epiphyllum hookeri', 'leaf cactus', 'night blooming cereus'},
 
     # ── Tillandsia / Air plants ───────────────────────────────────────────────
     {'tillandsia ionantha', 'blushing bride air plant', 'sky plant'},
@@ -210,6 +212,145 @@ SYNONYM_GROUPS = [
     {'colocasia', 'taro', 'elephant ear'},
     {'caladium', 'angel wings', 'heart of jesus', 'elephant ear caladium'},
 
+    # ── Vining houseplants ───────────────────────────────────────────────────
+    {'scindapsus pictus', 'satin pothos', 'silver pothos', 'silver vine',
+     'silvery philodendron'},
+    {'monstera adansonii', 'swiss cheese vine', 'monkey mask monstera',
+     'adansons monstera', "adanson's monstera"},
+    {'rhaphidophora tetrasperma', 'mini monstera', 'ginny philodendron',
+     'philodendron piccolo', 'dwarf monstera'},
+    {'syngonium podophyllum', 'arrowhead plant', 'arrowhead vine',
+     'goosefoot plant', 'nephthytis'},
+    {'ceropegia woodii', 'string of hearts', 'rosary vine', 'chain of hearts',
+     'sweetheart vine'},
+    {'dischidia nummularia', 'string of nickels', 'button orchid'},
+    {'peperomia prostrata', 'string of turtles'},
+    {'peperomia argyreia', 'watermelon peperomia'},
+    {'xerosicyos danguyi', 'silver dollar vine', 'dollar vine'},
+    {'epipremnum pinnatum', 'dragon tail plant', 'centipede tongavine'},
+
+    # ── Hoya ──────────────────────────────────────────────────────────────────
+    {'hoya carnosa', 'wax plant', 'porcelain flower', 'honey plant'},
+    {'hoya kerrii', 'sweetheart hoya', 'valentine hoya', 'lucky heart hoya',
+     'heart leaf hoya'},
+    {'hoya pubicalyx', 'shooting star hoya'},
+    {'hoya linearis', 'angel hair hoya'},
+
+    # ── Foliage houseplants ──────────────────────────────────────────────────
+    {'anthurium andraeanum', 'flamingo flower', 'flamingo lily',
+     "painter's palette", 'tailflower'},
+    {'dieffenbachia seguine', 'dumb cane', 'spotted dumb cane'},
+    {'aspidistra elatior', 'cast iron plant', 'bar room plant'},
+    {'chamaedorea elegans', 'parlor palm', 'parlour palm', 'neanthe bella palm'},
+    {'beaucarnea recurvata', 'ponytail palm', "elephant's foot palm",
+     'elephants foot palm', 'bottle palm'},
+    {'cycas revoluta', 'sago palm', 'king sago', 'japanese sago palm'},
+    {'zamia furfuracea', 'cardboard palm', 'cardboard cycad', 'jamaican sago'},
+    {'yucca elephantipes', 'spineless yucca', 'giant yucca', 'stick yucca'},
+    {'schefflera arboricola', 'dwarf umbrella tree', 'hawaiian umbrella plant'},
+    {'fittonia albivenis', 'nerve plant', 'mosaic plant', 'painted net leaf'},
+    {'hypoestes phyllostachya', 'polka dot plant', 'freckle face plant'},
+    {'oxalis triangularis', 'purple shamrock', 'false shamrock', 'love plant'},
+    {'stromanthe sanguinea', 'triostar stromanthe', 'magenta stromanthe'},
+    {'ctenanthe burle-marxii', 'fishbone prayer plant', 'never never plant'},
+    {'begonia maculata', 'polka dot begonia', 'spotted begonia',
+     'angel wing begonia'},
+    {'strelitzia reginae', 'orange bird of paradise', 'crane flower'},
+    {'strelitzia nicolai', 'giant white bird of paradise', 'wild banana'},
+
+    # ── Ferns ─────────────────────────────────────────────────────────────────
+    {'nephrolepis exaltata', 'boston fern', 'sword fern'},
+    {'asplenium nidus', "bird's nest fern", 'birds nest fern'},
+    {'platycerium bifurcatum', 'staghorn fern', 'elkhorn fern'},
+
+    # ── Trailing succulents ──────────────────────────────────────────────────
+    {'curio radicans', 'senecio radicans', 'string of bananas',
+     'fishhook senecio', 'banana vine'},
+    {'curio herreanus', 'senecio herreianus', 'string of beads',
+     'string of watermelons', 'gooseberry plant'},
+    {'crassula perforata', 'string of buttons', 'necklace vine',
+     'baby necklace'},
+    {'othonna capensis', 'ruby necklace', 'string of rubies', 'little pickles'},
+
+    # ── Kalanchoe / Cotyledon / Adromischus ──────────────────────────────────
+    {'kalanchoe tomentosa', 'panda plant', 'chocolate soldier',
+     'pussy ears plant'},
+    {'kalanchoe daigremontiana', 'mother of thousands', 'mexican hat plant'},
+    {'kalanchoe delagoensis', 'chandelier plant', 'mother of millions'},
+    {'cotyledon tomentosa', "bear's paw", 'bears paw succulent'},
+    {'adromischus cristatus', 'key lime pie succulent', 'crinkle leaf plant'},
+
+    # ── Mesembs / mimicry ────────────────────────────────────────────────────
+    {'faucaria tigrina', 'tiger jaws', 'tigers jaw succulent'},
+    {'pleiospilos nelii', 'split rock', 'split rock succulent', 'cleft stone'},
+    {'anacampseros rufescens', 'sand rose succulent'},
+    {'delosperma cooperi', 'hardy ice plant', 'trailing ice plant',
+     'purple ice plant'},
+    {'aptenia cordifolia', 'baby sun rose', 'heartleaf iceplant'},
+    {'sempervivum tectorum', 'common houseleek', 'hens and chicks',
+     'hen and chicks'},
+
+    # ── Stapeliads ───────────────────────────────────────────────────────────
+    {'stapelia gigantea', 'carrion flower', 'starfish flower',
+     'zulu giant'},
+    {'huernia zebrina', 'lifesaver plant', 'owl eyes succulent'},
+
+    # ── Epiphytic cacti ──────────────────────────────────────────────────────
+    {'selenicereus anthonyanus', 'disocactus anthonyanus', 'fishbone cactus',
+     'ric rac cactus', 'zigzag cactus'},
+    {'hatiora salicornioides', "drunkard's dream", 'dancing bones cactus',
+     'bottle cactus'},
+    {'rhipsalis baccifera', 'mistletoe cactus', 'spaghetti cactus'},
+
+    # ── Desert cacti ─────────────────────────────────────────────────────────
+    {'echinocactus grusonii', 'golden barrel cactus',
+     "mother-in-law's cushion"},
+    {'astrophytum myriostigma', "bishop's cap cactus", 'bishops cap cactus',
+     'bishops miter cactus'},
+    {'astrophytum asterias', 'sand dollar cactus', 'sea urchin cactus',
+     'star cactus astrophytum'},
+    {'gymnocalycium mihanovichii', 'moon cactus', 'chin cactus',
+     'hibotan cactus'},
+    {'cephalocereus senilis', 'old man cactus', 'old man of mexico'},
+    {'espostoa lanata', 'peruvian old man cactus', 'snowball cactus'},
+    {'cleistocactus straussii', 'silver torch cactus', 'wooly torch cactus'},
+    {'myrtillocactus geometrizans', 'blue myrtle cactus', 'blue candle cactus',
+     'bilberry cactus'},
+    {'pilosocereus pachycladus', 'blue columnar cactus', 'blue torch cactus'},
+    {'opuntia microdasys', 'bunny ears cactus', 'polka dot cactus',
+     'angel wings cactus'},
+    {'mammillaria elongata', 'ladyfinger cactus', 'gold lace cactus'},
+    {'mammillaria plumosa', 'feather cactus', 'feather ball cactus'},
+
+    # ── Euphorbia ────────────────────────────────────────────────────────────
+    {'euphorbia tirucalli', 'firesticks', 'pencil cactus', 'sticks on fire',
+     'pencil tree'},
+    {'euphorbia trigona', 'african milk tree', 'cathedral cactus',
+     'friendship cactus'},
+    {'euphorbia lactea', 'coral cactus', 'mottled spurge', 'dragon bones'},
+
+    # ── More Aloe / Haworthia / Gasteria ─────────────────────────────────────
+    {'aloe juvenna', 'tiger tooth aloe'},
+    {'aloe polyphylla', 'spiral aloe'},
+    {'haworthia truncata', "horse's teeth succulent", 'horses teeth succulent'},
+    {'gasteria bicolor', 'ox tongue plant', 'lawyer tongue plant'},
+
+    # ── More Echeveria / Sedum / Crassula / Aeonium ──────────────────────────
+    {'echeveria elegans', 'mexican snowball', 'white mexican rose',
+     'mexican gem'},
+    {'echeveria agavoides', 'lipstick echeveria', 'molded wax agave'},
+    {'echeveria setosa', 'mexican firecracker'},
+    {'graptopetalum paraguayense', 'ghost plant succulent',
+     'mother of pearl plant'},
+    {'sedum rubrotinctum', 'jelly bean plant', 'pork and beans succulent',
+     'christmas cheer sedum'},
+    {'sedum nussbaumerianum', 'coppertone stonecrop', 'coppertone sedum'},
+    {'crassula arborescens', 'silver jade plant', 'silver dollar jade',
+     'chinese jade'},
+    {'crassula muscosa', 'watch chain succulent', 'princess pine succulent',
+     'zipper plant'},
+    {'aeonium arboreum', 'tree aeonium', 'irish rose succulent'},
+
 ]
 
 
@@ -228,7 +369,69 @@ GENUS_ONLY = {
     'sansevieria', 'sedum', 'sempervivum', 'senecio', 'spathiphyllum',
     'adromischus', 'agave', 'aloe', 'anthurium', 'cereus', 'cotyledon',
     'curio', 'dracaena', 'monstera', 'portulacaria', 'rebutia', 'schlumbergera',
+    # genera introduced by the houseplant/cactus groups below
+    'aeonium', 'aglaonema', 'aptenia', 'anacampseros', 'asplenium', 'aspidistra',
+    'astrophytum', 'beaucarnea', 'begonia', 'caladium', 'cephalocereus',
+    'ceropegia', 'chamaedorea', 'chlorophytum', 'cleistocactus', 'colocasia',
+    'conophytum', 'ctenanthe', 'cycas', 'dieffenbachia', 'dischidia',
+    'disocactus', 'echinocactus', 'echinopsis', 'epipremnum', 'espostoa',
+    'faucaria', 'fenestraria', 'ficus', 'fittonia', 'gymnocalycium',
+    'hatiora', 'hoya', 'huernia', 'hypoestes', 'maranta', 'myrtillocactus',
+    'nephrolepis', 'othonna', 'oxalis', 'pachira', 'parodia', 'pilea',
+    'pilosocereus', 'platycerium', 'pleiospilos', 'rhaphidophora',
+    'scindapsus', 'selenicereus', 'stapelia', 'strelitzia', 'stromanthe',
+    'syngonium', 'tillandsia', 'tradescantia', 'xerosicyos', 'yucca',
+    'zamia', 'zamioculcas',
 }
+
+
+def _is_binomial(phrase):
+    """True if a phrase looks like a scientific name ('hoya carnosa').
+
+    Two words whose first is a known genus. Common names such as
+    'elephant ear' or 'zebra plant' do not qualify — which matters, because
+    two plants sharing a common name may genuinely be different species,
+    whereas two entries sharing a binomial are certainly the same plant.
+    """
+    parts = phrase.split()
+    return len(parts) == 2 and parts[0] in GENUS_ONLY and len(parts[1]) >= 3
+
+
+def _merge_duplicate_groups(groups):
+    """Union groups that share a scientific binomial.
+
+    The data file is hand-maintained, so the same plant can end up listed in
+    two places. Without merging, the shared binomial looks 'ambiguous' and gets
+    dropped from the index — silently losing the very name we rely on most.
+    Common-name overlaps are deliberately NOT merged.
+    """
+    parent = list(range(len(groups)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    seen = {}
+    for gid, group in enumerate(groups):
+        for name in group:
+            if _is_binomial(name):
+                if name in seen:
+                    union(seen[name], gid)
+                else:
+                    seen[name] = gid
+
+    merged = {}
+    for gid, group in enumerate(groups):
+        root = find(gid)
+        merged.setdefault(root, set()).update(group)
+    return list(merged.values())
 
 
 def _build_index():
@@ -240,10 +443,15 @@ def _build_index():
     Multi-word phrases are always preferred; single words are only indexed
     if they uniquely identify one species (e.g. 'lithops').
     """
-    # First pass: map each phrase to all groups it appears in
     from collections import defaultdict
+
+    # Merge duplicate entries for the same plant first, so a shared scientific
+    # name isn't mistaken for an ambiguity and discarded.
+    groups = _merge_duplicate_groups(SYNONYM_GROUPS)
+
+    # First pass: map each phrase to all groups it appears in
     phrase_groups = defaultdict(set)
-    for gid, group in enumerate(SYNONYM_GROUPS):
+    for gid, group in enumerate(groups):
         for name in group:
             phrase_groups[name].add(gid)
 
@@ -256,10 +464,10 @@ def _build_index():
         if ' ' not in phrase and phrase in GENUS_ONLY:
             continue
         index[phrase] = next(iter(gids))
-    return index
+    return index, groups
 
 
-_INDEX = _build_index()
+_INDEX, _GROUPS = _build_index()
 
 
 from functools import lru_cache
@@ -291,7 +499,8 @@ def synonym_keywords(title):
     gids = synonym_group_ids(title)
     words = set()
     for gid in gids:
-        for phrase in SYNONYM_GROUPS[gid]:
+        # _GROUPS is the merged view that _INDEX's ids refer to
+        for phrase in _GROUPS[gid]:
             for w in _re.findall(r'[a-z]+', phrase):
                 if len(w) >= 4:
                     words.add(w)

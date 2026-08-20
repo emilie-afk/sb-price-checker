@@ -369,7 +369,7 @@ def run_diagnostics(db_conn, max_samples=300):
             if len(word) >= 4 and word not in STOP_WORDS:
                 keyword_index[word].append(row)
 
-    size_gaps = defaultdict(lambda: {'count': 0, 'samples': []})
+    size_gaps = defaultdict(lambda: {'count': 0, 'samples': [], 'seen': set()})
     outliers, near_misses = [], []
 
     for sb_row in sb_products:
@@ -421,7 +421,11 @@ def run_diagnostics(db_conn, max_samples=300):
                 key = (comp_size, nearest)
                 g = size_gaps[key]
                 g['count'] += 1
-                if len(g['samples']) < 5:
+                # One example per title pair — the same product often has
+                # several variants, which otherwise repeats the same row.
+                pair = (sb_title, row[1], row[0])
+                if len(g['samples']) < 5 and pair not in g['seen']:
+                    g['seen'].add(pair)
                     g['samples'].append({
                         'sb_title': sb_title, 'comp_title': row[1],
                         'source': row[0], 'our_sizes': our_sizes,
