@@ -369,15 +369,23 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
             print(f'[match] {i+1}/{total_sb} done — '
                   f'matched={summary["matched"]} skipped={summary["skipped"]}', flush=True)
 
-    # Final flush
+    # Final flush — multi-row INSERT in chunks.
+    # pg8000's executemany() does one round-trip per row, so a few thousand
+    # matches took minutes. Chunked multi-row VALUES is a single trip each.
     if pending_inserts:
-        cursor._cur.executemany('''
-            INSERT INTO matches
-            (sb_product_id, competitor_variant_id, relationship, confidence, status,
-             ai_explanation, price_diff_pct, market_position, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', pending_inserts)
+        CHUNK = 300
+        for start in range(0, len(pending_inserts), CHUNK):
+            chunk = pending_inserts[start:start + CHUNK]
+            ph = ', '.join(['(%s,%s,%s,%s,%s,%s,%s,%s,%s)'] * len(chunk))
+            flat = [val for row in chunk for val in row]
+            cursor.execute(f'''
+                INSERT INTO matches
+                (sb_product_id, competitor_variant_id, relationship, confidence, status,
+                 ai_explanation, price_diff_pct, market_position, created_at)
+                VALUES {ph}
+            ''', flat)
         db_conn.commit()
+        print(f'[match] inserted {len(pending_inserts)} matches', flush=True)
 
     if task_id and task_id in _progress:
         del _progress[task_id]

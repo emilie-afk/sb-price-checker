@@ -48,33 +48,85 @@ def _strip_html(html):
     return re.sub(r'\s+', ' ', text).strip()[:500]
 
 
+def bulk_update(cursor, table, rows, columns, cast_types):
+    """Update many rows in ONE query using UPDATE ... FROM (VALUES ...).
+
+    pg8000's executemany() sends a separate round-trip per row, which made
+    updating a few thousand prices take minutes. This does it in one statement.
+
+    rows:       list of tuples, with the row id LAST
+    columns:    column names to set, in tuple order (excluding the trailing id)
+    cast_types: postgres casts for each value including the id, e.g.
+                ('double precision', 'integer', 'integer')
+    """
+    if not rows:
+        return 0
+    CHUNK = 500
+    total = 0
+    set_clause = ', '.join(f'{c} = v.{c}' for c in columns)
+    col_list = ', '.join([*columns, 'row_id'])
+    one_row = '(' + ', '.join(f'%s::{t}' for t in cast_types) + ')'
+    for start in range(0, len(rows), CHUNK):
+        chunk = rows[start:start + CHUNK]
+        ph = ', '.join([one_row] * len(chunk))
+        flat = [val for r in chunk for val in r]
+        cursor.execute(
+            f'UPDATE {table} AS t SET {set_clause} '
+            f'FROM (VALUES {ph}) AS v({col_list}) '
+            f'WHERE t.id = v.row_id',
+            flat
+        )
+        total += len(chunk)
+    return total
+
+
+def _fetch_shopify_page(url_template, page, since_param):
+    """Fetch one Shopify products.json page. Returns (page, products list)."""
+    url = url_template.format(page=page) + since_param
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        if resp.status_code != 200:
+            return page, []
+        return page, resp.json().get('products', [])
+    except Exception:
+        return page, []
+
+
 def fetch_shopify_products(url_template, since=None):
     """Paginate through a Shopify products.json endpoint. Returns list of raw products.
 
-    If `since` is an ISO timestamp string, appends updated_at_min so Shopify
-    only returns products modified after that time — drastically reducing
-    pages fetched on subsequent runs.
+    Pages are fetched concurrently in waves — the public products.json endpoint
+    gives no total count, so we request a wave of pages at a time and stop at
+    the first empty one. Much faster than a serial loop with a sleep between
+    every page.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    # NOTE: updated_at_min is an Admin API parameter; the public products.json
+    # endpoint ignores it, so every run is effectively a full catalog fetch.
+    since_param = ''
     products = []
+    WAVE = 5          # pages requested in parallel
     page = 1
-    since_param = f'&updated_at_min={since}' if since else ''
-    if since:
-        print(f'[shopify] incremental fetch — only products updated since {since[:19]}', flush=True)
     while True:
-        url = url_template.format(page=page) + since_param
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            if resp.status_code != 200:
-                break
-            batch = resp.json().get('products', [])
+        pages = list(range(page, page + WAVE))
+        with ThreadPoolExecutor(max_workers=WAVE) as pool:
+            results = list(pool.map(
+                lambda p: _fetch_shopify_page(url_template, p, since_param), pages
+            ))
+        results.sort(key=lambda r: r[0])
+
+        hit_end = False
+        for pnum, batch in results:
             if not batch:
+                hit_end = True
                 break
             products.extend(batch)
-            print(f'[shopify] page {page}: {len(batch)} products (total {len(products)})', flush=True)
-            page += 1
-            time.sleep(1)
-        except Exception:
+        print(f'[shopify] pages {pages[0]}-{pages[-1]}: total {len(products)} products', flush=True)
+
+        if hit_end:
             break
+        page += WAVE
     return products
 
 
@@ -419,9 +471,9 @@ def sync_sb_products(db_conn):
 
     # 5. Apply all variant changes in batches
     if to_update:
-        cursor._cur.executemany(
-            'UPDATE sb_variants SET price=%s, available=%s WHERE id=%s', to_update
-        )
+        bulk_update(cursor, 'sb_variants', to_update,
+                    columns=('price', 'available'),
+                    cast_types=('double precision', 'integer', 'integer'))
         print(f'[sync_sb] updated {len(to_update)} variants', flush=True)
 
     if to_insert:
@@ -616,10 +668,9 @@ def run_collection(db_conn, sources=None):
 
             # 5. Apply price updates in one batch
             if to_update:
-                cursor._cur.executemany(
-                    'UPDATE competitor_variants SET price=%s, available=%s, collected_at=%s WHERE id=%s',
-                    to_update
-                )
+                bulk_update(cursor, 'competitor_variants', to_update,
+                            columns=('price', 'available', 'collected_at'),
+                            cast_types=('double precision', 'integer', 'text', 'integer'))
                 print(f'[collect] {source_key}: updated {len(to_update)} prices', flush=True)
 
             # 6. Insert new variants, collecting their ids for snapshots
