@@ -199,6 +199,11 @@ def products():
     else:
         rows = db.execute(base_query + ' ORDER BY p.title ASC').fetchall()
 
+    # Drop arrangements, gift sets, bundles and non-plant items — they have no
+    # comparable competitor product, so showing a price position is misleading.
+    from .matcher import is_comparable_plant
+    rows = [r for r in rows if is_comparable_plant(r[1], r[2])]
+
     # Fixed competitor display order and labels
     source_labels = {
         'mountain_crest':   'MCG',
@@ -413,6 +418,10 @@ def export_csv():
         {where}
         ORDER BY m.price_diff_pct ASC
     ''', params or ()).fetchall()
+
+    # Keep the export consistent with the products table
+    from .matcher import is_comparable_plant
+    rows = [r for r in rows if is_comparable_plant(r[0], r[1])]
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -683,12 +692,22 @@ def run_match():
     task_id = uuid.uuid4().hex[:8]
 
     def _run(db, pt, src, do_clear):
+        deleted = 0
         if do_clear:
             cur = db.cursor()
-            cur.execute("DELETE FROM matches WHERE status='pending'")
+            # Delete ALL matches, not just pending. Every match is created with
+            # status='accepted', so the old "WHERE status='pending'" deleted
+            # nothing and stale matches could never be rebuilt.
+            cur.execute('SELECT COUNT(*) FROM matches')
+            row = cur.fetchone()
+            deleted = row[0] if row else 0
+            cur.execute('DELETE FROM matches')
             db.commit()
-            print('[match] cleared all pending matches', flush=True)
-        return run_matching(db, plant_types=pt, sources=src, task_id=task_id)
+            print(f'[match] cleared ALL {deleted} existing matches', flush=True)
+        result = run_matching(db, plant_types=pt, sources=src, task_id=task_id)
+        if do_clear:
+            result['deleted'] = deleted
+        return result
 
     _run_in_background(task_id, _run, plant_types, sources, clear_pending)
     return jsonify({'success': True, 'task_id': task_id})
