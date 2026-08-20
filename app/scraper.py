@@ -769,6 +769,7 @@ def run_collection(db_conn, sources=None):
             snap_rows = []    # (variant_id, price, available, now) for known ids
             to_insert = []    # (product_id, ext_vid, title, price, available, sku, now)
             new_meta = {}     # ext_vid -> (price, available) for snapshot after insert
+            seen_ids = []     # db ids of every variant present in THIS scrape
             for ext_pid, variants in variants_by_ext.items():
                 product_id = ext_to_id.get(ext_pid)
                 if not product_id:
@@ -779,6 +780,7 @@ def run_collection(db_conn, sources=None):
                         continue
                     if ext_vid in existing:
                         vid, old_price = existing[ext_vid]
+                        seen_ids.append(vid)
                         if v['price'] != old_price:
                             to_update.append((v['price'], v['available'], now, vid))
                             snap_rows.append((vid, v['price'], v['available'], now))
@@ -805,11 +807,46 @@ def run_collection(db_conn, sources=None):
                     f'variant_title, price, available, sku, collected_at) VALUES {ph} '
                     f'RETURNING id, external_variant_id', flat
                 ).fetchall():
+                    seen_ids.append(r[0])
                     meta = new_meta.get(str(r[1]))
                     if meta:
                         snap_rows.append((r[0], meta[0], meta[1], now))
             if to_insert:
                 print(f'[collect] {source_key}: inserted {len(to_insert)} new variants', flush=True)
+
+            # 6b. Delisting sweep.
+            # These stores hide out-of-stock products from their listings, so a
+            # variant that has vanished is no longer buyable. Without this,
+            # sold-out items stayed available=1 forever and kept being priced
+            # against us (e.g. MCG's "[large]" listings with no Add to Cart).
+            delisted = 0
+            prev_count = len(existing)
+            # Safety: a partial scrape must not wipe out the catalogue
+            if seen_ids and (prev_count == 0 or len(seen_ids) >= prev_count * 0.5):
+                # Mark everything we just saw as present and in stock
+                for start in range(0, len(seen_ids), 500):
+                    chunk = seen_ids[start:start + 500]
+                    ph = ','.join(['%s'] * len(chunk))
+                    cursor.execute(
+                        f'UPDATE competitor_variants SET collected_at=%s, available=1 '
+                        f'WHERE id IN ({ph})', [now] + chunk)
+
+                # Anything for this source not touched this run is gone
+                for start in range(0, len(product_ids), 500):
+                    chunk = product_ids[start:start + 500]
+                    ph = ','.join(['%s'] * len(chunk))
+                    cursor.execute(
+                        f'UPDATE competitor_variants SET available=0 '
+                        f'WHERE product_id IN ({ph}) AND available=1 '
+                        f'AND (collected_at IS NULL OR collected_at < %s)',
+                        chunk + [now])
+                    delisted += cursor._cur.rowcount or 0
+                print(f'[collect] {source_key}: marked {delisted} delisted variants '
+                      f'as out of stock', flush=True)
+            elif seen_ids:
+                print(f'[collect] {source_key}: SKIPPED delisting sweep — only '
+                      f'{len(seen_ids)} of {prev_count} known variants seen '
+                      f'(possible partial scrape)', flush=True)
 
             # 7. Write all price snapshots in batches
             for start in range(0, len(snap_rows), CHUNK):
@@ -823,7 +860,8 @@ def run_collection(db_conn, sources=None):
 
             new_products = len({v[0] for v in to_insert})
             db_conn.commit()
-            msg = f'{len(raw_products)} products checked, {new_products} new, {price_changes} price changes'
+            msg = (f'{len(raw_products)} products checked, {new_products} new, '
+                   f'{price_changes} price changes, {delisted} delisted')
             print(f"[collect] {source_key}: {msg}", flush=True)
 
             cursor.execute(
@@ -832,7 +870,8 @@ def run_collection(db_conn, sources=None):
             )
             db_conn.commit()
             results[source_key] = {'status': 'success', 'products': len(raw_products),
-                                    'new': new_products, 'price_changes': price_changes}
+                                    'new': new_products, 'price_changes': price_changes,
+                                    'delisted': delisted}
 
         except Exception as e:
             print(f"[collect] {source_key} ERROR: {e}", flush=True)

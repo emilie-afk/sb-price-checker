@@ -78,6 +78,26 @@ def extract_size(text):
     return None
 
 
+def is_bundle_variant(variant_title):
+    """True if a VARIANT is a multi-pack rather than a single plant.
+
+    Succulents Box sells the same plant as '2 INCH' and as '2-PACK - 2"',
+    '4-PACK - 2"', '8-PACK - 2"'. A pack price must never be compared against
+    a competitor's single plant — that alone produced bogus percentages.
+    """
+    t = (variant_title or '').lower()
+    if re.search(r'\b\d+\s*[-–]?\s*(pack|pk|pc|pcs|piece|count|ct|set|tray)\b', t):
+        return True
+    if re.search(r'\b(pack|set|tray|bundle|lot)\s*of\s*\d+', t):
+        return True
+    if re.search(r'\bx\s?\d+\b', t):
+        return True
+    # Bare multi-unit words — a variant called 'Set' or 'Tray' is never one plant
+    if re.search(r'\b(pack|packs|set|sets|tray|trays|bundle|combo|kit|trio|duo)\b', t):
+        return True
+    return False
+
+
 def _comparable_sb_price(sb_variants, comp_variant_title, comp_product_title=''):
     """Pick the SB price to compare against a competitor variant.
 
@@ -93,7 +113,10 @@ def _comparable_sb_price(sb_variants, comp_variant_title, comp_product_title='')
     'Default Title') never expose a size, so requiring an exact size match
     would silently drop every one of their products.
     """
-    usable = [v for v in sb_variants if v.get('available') and v['price'] > 0]
+    # Single plants only — a 4-pack price is not comparable to one plant
+    usable = [v for v in sb_variants
+              if v.get('available') and v['price'] > 0
+              and not is_bundle_variant(v['variant_title'])]
     if not usable:
         return None, None, None
 
@@ -116,6 +139,18 @@ def _comparable_sb_price(sb_variants, comp_variant_title, comp_product_title='')
         if best is not None:
             return best['price'], comp_size, 'exact'
         return None, None, None   # they state a size we don't carry
+
+    # No explicit size. If the title advertises an upsized version, it is NOT
+    # an entry-level product — comparing it to our cheapest variant reads as
+    # "we're cheaper" when we're simply selling a smaller plant. Skip instead.
+    #
+    # Only bracketed markers ('[large]', '(XL)') or a trailing '- Large' count,
+    # so cultivar names such as Echeveria 'Big Red' are not caught.
+    blob = f'{comp_variant_title} {comp_product_title}'.lower()
+    _UPSIZED = r'(large|larger|x-?large|xl|extra\s+large|jumbo|giant|oversized)'
+    if (re.search(r'[\[\(]\s*' + _UPSIZED + r'\s*[\]\)]', blob)
+            or re.search(r'[-–:]\s*' + _UPSIZED + r'\s*$', blob.strip())):
+        return None, None, None
 
     cheapest = min(usable, key=lambda v: v['price'])
     return cheapest['price'], None, 'entry'
