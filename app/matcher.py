@@ -77,31 +77,47 @@ def extract_size(text):
     return None
 
 
-def _same_size_sb_price(sb_variants, comp_variant_title, comp_product_title=''):
-    """Return the SB price for the variant matching the competitor's size.
+def _comparable_sb_price(sb_variants, comp_variant_title, comp_product_title=''):
+    """Pick the SB price to compare against a competitor variant.
 
-    Returns (price, size) if a same-size in-stock SB variant exists,
-    otherwise (None, None) — the caller then skips the match rather than
-    comparing a 2" cutting against a 6" potted plant.
+    Returns (price, size, tier):
+      ('exact')  both sides state a size and they agree — most trustworthy
+      ('entry')  the competitor publishes no size at all, so we compare
+                 entry prices: their listed/'from' price vs our cheapest
+                 in-stock variant. Both are "cheapest way to buy this plant".
+      (None)     the competitor states a size we don't stock — a genuine
+                 mismatch, skip rather than compare 2" against 6".
+
+    Some retailers (Mountain Crest, and any Shopify store using
+    'Default Title') never expose a size, so requiring an exact size match
+    would silently drop every one of their products.
     """
-    if not sb_variants:
-        return None, None
-
-    # Competitor size can be in the variant title or the product title
-    comp_size = extract_size(comp_variant_title) or extract_size(comp_product_title)
-    if comp_size is None:
-        return None, None
-
-    # Only in-stock SB variants with a real price are comparable
     usable = [v for v in sb_variants if v.get('available') and v['price'] > 0]
     if not usable:
-        return None, None
+        return None, None, None
 
-    for v in usable:
-        if extract_size(v['variant_title']) == comp_size:
-            return v['price'], comp_size
+    comp_size = extract_size(comp_variant_title) or extract_size(comp_product_title)
 
-    return None, None
+    if comp_size is not None:
+        # Nearest SB size within tolerance. Retailers use slightly different
+        # pot standards — MCG's 3.5" is the same product tier as a 4" — so
+        # allow a small gap rather than dropping the comparison entirely.
+        # 0.75" keeps 3.5"~4" and 2"~2.5" while still rejecting 2"~4".
+        TOLERANCE = 0.75
+        best, best_gap = None, None
+        for v in usable:
+            vs = extract_size(v['variant_title'])
+            if vs is None:
+                continue
+            gap = abs(vs - comp_size)
+            if gap <= TOLERANCE and (best_gap is None or gap < best_gap):
+                best, best_gap = v, gap
+        if best is not None:
+            return best['price'], comp_size, 'exact'
+        return None, None, None   # they state a size we don't carry
+
+    cheapest = min(usable, key=lambda v: v['price'])
+    return cheapest['price'], None, 'entry'
 
 
 def _keyword_search_terms(title):
@@ -274,7 +290,25 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
     print(f'[match] {len(sb_products)} SB products, {len(existing_matches)} existing matches, '
           f'{len(all_variants)} competitor variants in memory', flush=True)
 
-    summary = {'matched': 0, 'skipped': 0}
+    # Diagnostic: how many variants per source actually state a size?
+    # A source with 0% sized variants can only ever produce 'entry' comparisons.
+    size_stats = defaultdict(lambda: [0, 0])   # source -> [sized, total]
+    for row in all_variants:
+        st = size_stats[row[0]]
+        st[1] += 1
+        if extract_size(row[5]) is not None or extract_size(row[1]) is not None:
+            st[0] += 1
+    for src, (sized, total) in sorted(size_stats.items()):
+        pct = (sized / total * 100) if total else 0
+        print(f'[match]   {src}: {sized}/{total} variants state a size ({pct:.0f}%)', flush=True)
+
+    summary = {'matched': 0, 'skipped': 0,
+               'exact': 0,             # same stated size
+               'entry': 0,            # competitor lists no size, entry prices compared
+               'skipped_name': 0,     # title similarity below threshold
+               'skipped_size': 0,     # competitor states a size we don't stock
+               'skipped_outlier': 0,  # diff outside -75%..+300%
+               'excluded_products': 0}
     pending_inserts = []
     total_sb = len(sb_products)
     if task_id:
@@ -286,7 +320,7 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
         # Skip arrangements, gift sets, bundles and non-plant items —
         # these have no comparable single-plant product at a competitor.
         if not is_comparable_plant(sb_title, sb_product_type):
-            summary['skipped'] += 1
+            summary['excluded_products'] += 1
             continue
 
         # Fetch from pre-loaded in-memory dict (no extra DB query per product)
@@ -329,6 +363,7 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
 
             if score < ACCEPT_THRESHOLD:
                 summary['skipped'] += 1
+                summary['skipped_name'] += 1
                 continue
 
             # Competitor product must also be a single comparable plant
@@ -337,19 +372,16 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
                 continue
 
             comp_price = float(row[6] or 0)
-            # Compare like-for-like size only. If the competitor has no size in
-            # its title, or we don't stock that size, skip rather than compare
-            # a 2" cutting against a 6" potted plant.
-            sb_price, matched_size = _same_size_sb_price(sb_variants, row[5], row[1])
+            sb_price, matched_size, tier = _comparable_sb_price(sb_variants, row[5], row[1])
             if not sb_price or sb_price <= 0 or comp_price <= 0:
                 summary['skipped'] += 1
+                summary['skipped_size'] += 1
                 continue
 
             price_diff_pct = (comp_price - sb_price) / sb_price * 100
-            # Same size, so a wild diff now means a genuine outlier or a bad
-            # name match. Still guard against nonsense.
             if price_diff_pct < -75 or price_diff_pct > 300:
                 summary['skipped'] += 1
+                summary['skipped_outlier'] += 1
                 continue
 
             if price_diff_pct > 10:
@@ -360,10 +392,17 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
                 market_pos = 'near_market'
 
             status = 'accepted'
-            relationship = 'exact' if score >= 88 else 'comparable'
+            # 'exact' = same stated size. 'comparable' = entry-price comparison,
+            # shown in the UI so an approximate row is never mistaken for exact.
+            relationship = 'exact' if tier == 'exact' else 'comparable'
+            summary['exact' if tier == 'exact' else 'entry'] += 1
 
             method = 'synonym name match' if score == 88 else f'text similarity {score}/100'
-            reasoning = f'Matched via {method} at {matched_size:g}" size'
+            if tier == 'exact':
+                reasoning = f'Matched via {method}, same {matched_size:g}" size'
+            else:
+                reasoning = (f'Matched via {method}; competitor lists no size, '
+                             f'compared entry prices')
 
             pending_inserts.append((
                 sb_id, row[4], relationship, score, status,
