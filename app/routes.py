@@ -89,10 +89,12 @@ def dashboard():
           SUM(CASE WHEN min_diff >= -10 AND max_diff > 10 THEN 1 ELSE 0 END) as above,
           SUM(CASE WHEN min_diff >= -10 AND max_diff <= 10 THEN 1 ELSE 0 END) as near
         FROM (
-          SELECT MIN(price_diff_pct) as min_diff, MAX(price_diff_pct) as max_diff
-          FROM matches
-          WHERE status='accepted' AND price_diff_pct IS NOT NULL
-          GROUP BY sb_product_id
+          SELECT MIN(m.price_diff_pct) as min_diff, MAX(m.price_diff_pct) as max_diff
+          FROM matches m
+          JOIN sb_products p ON p.id = m.sb_product_id
+          WHERE m.status='accepted' AND m.price_diff_pct IS NOT NULL
+            AND COALESCE(p.in_stock, 1) = 1   -- exclude sold-out products
+          GROUP BY m.sb_product_id
         ) sub
     '''
     _pos = db.execute(_pos_query).fetchone()
@@ -185,6 +187,7 @@ def products():
         FROM sb_products p
         LEFT JOIN matches m ON m.sb_product_id = p.id
         WHERE p.tracked=1
+          AND COALESCE(p.in_stock, 1) = 1   -- hide fully sold-out products
         GROUP BY p.id
     '''
     if position:
@@ -221,7 +224,9 @@ def products():
         FROM matches m
         JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
         JOIN competitor_products cp ON cp.id = cv.product_id
+        JOIN sb_products p ON p.id = m.sb_product_id
         WHERE m.status='accepted' AND m.price_diff_pct IS NOT NULL
+          AND COALESCE(p.in_stock, 1) = 1
         GROUP BY m.sb_product_id, cp.source
     ''').fetchall()
 
@@ -534,6 +539,129 @@ def mcg_status():
     if not row:
         return jsonify({'status': 'idle'})
     return jsonify({'status': row[0], 'message': row[1], 'completed_at': row[2]})
+
+
+@bp.route('/size-gaps')
+def size_gaps():
+    """Size coverage: which sizes we offer that competitors don't, and vice versa.
+
+    Compares, per matched plant, the set of pot sizes we stock against the
+    sizes each competitor stocks for the same plant.
+    """
+    from .matcher import extract_size, is_comparable_plant
+    db = get_db()
+
+    source_labels = {
+        'planet_desert': 'Planet Desert',
+        'house_plant_shop': 'House Plant Shop',
+        'the_sill': 'The Sill',
+        'mountain_crest': 'MCG',
+    }
+
+    # Our sizes per product (in-stock variants only)
+    sb_rows = db.execute('''
+        SELECT p.id, p.title, p.product_type, v.variant_title, v.price
+        FROM sb_products p
+        JOIN sb_variants v ON v.product_id = p.id
+        WHERE p.tracked=1 AND COALESCE(p.in_stock,1)=1
+          AND v.available=1 AND v.price > 0
+    ''').fetchall()
+
+    sb_sizes = {}    # pid -> {size: price}
+    sb_titles = {}   # pid -> (title, product_type)
+    for pid, title, ptype, vtitle, price in sb_rows:
+        if not is_comparable_plant(title, ptype):
+            continue
+        size = extract_size(vtitle)
+        if size is None:
+            continue
+        sb_titles[pid] = (title, ptype)
+        sb_sizes.setdefault(pid, {})[size] = float(price or 0)
+
+    # Competitor sizes per (product, source) via accepted matches
+    comp_rows = db.execute('''
+        SELECT m.sb_product_id, cp.source, cv.variant_title, cp.title, cv.price
+        FROM matches m
+        JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
+        JOIN competitor_products cp ON cp.id = cv.product_id
+        WHERE m.status='accepted' AND cv.available=1 AND cv.price > 0
+    ''').fetchall()
+
+    comp_sizes = {}  # pid -> {source: {size: price}}
+    comp_variants_seen = 0
+    comp_variants_sized = 0
+    for pid, source, vtitle, ptitle, price in comp_rows:
+        comp_variants_seen += 1
+        size = extract_size(vtitle) or extract_size(ptitle)
+        if size is None:
+            continue
+        comp_variants_sized += 1
+        comp_sizes.setdefault(pid, {}).setdefault(source, {})[size] = float(price or 0)
+
+    # Build per-plant gap rows
+    rows = []
+    for pid, sources in comp_sizes.items():
+        ours = sb_sizes.get(pid)
+        if not ours:
+            continue
+        title, ptype = sb_titles.get(pid, ('', ''))
+        our_set = set(ours)
+        theirs_union = set()
+        per_source = {}
+        for src, sizes in sources.items():
+            per_source[src] = sorted(sizes)
+            theirs_union |= set(sizes)
+        rows.append({
+            'id': pid,
+            'title': title,
+            'product_type': ptype or '',
+            'our_sizes': sorted(our_set),
+            'per_source': per_source,
+            'we_only': sorted(our_set - theirs_union),      # we offer, they don't
+            'they_only': sorted(theirs_union - our_set),    # they offer, we don't
+            'shared': sorted(our_set & theirs_union),
+        })
+
+    # Sort: biggest gaps first
+    rows.sort(key=lambda r: (-(len(r['they_only']) + len(r['we_only'])), r['title']))
+
+    # Aggregate: how often is each size missing on our side / their side
+    from collections import Counter
+    missing_for_us = Counter()    # size -> count of plants where a competitor has it and we don't
+    exclusive_to_us = Counter()   # size -> count of plants where only we have it
+    for r in rows:
+        for s in r['they_only']:
+            missing_for_us[s] += 1
+        for s in r['we_only']:
+            exclusive_to_us[s] += 1
+
+    # Size offering per retailer (across all matched plants)
+    size_by_retailer = {}   # label -> Counter(size -> n plants)
+    sb_counter = Counter()
+    for r in rows:
+        for s in r['our_sizes']:
+            sb_counter[s] += 1
+        for src, sizes in r['per_source'].items():
+            label = source_labels.get(src, src)
+            size_by_retailer.setdefault(label, Counter())
+            for s in sizes:
+                size_by_retailer[label][s] += 1
+    size_by_retailer = {'Succulents Box': sb_counter, **size_by_retailer}
+
+    all_sizes = sorted({s for c in size_by_retailer.values() for s in c})
+
+    active_sources = sorted({src for r in rows for src in r['per_source']})
+    competitors = [(s, source_labels.get(s, s)) for s in active_sources]
+
+    return render_template('size_gaps.html',
+        rows=rows,
+        competitors=competitors,
+        missing_for_us=sorted(missing_for_us.items(), key=lambda x: -x[1]),
+        exclusive_to_us=sorted(exclusive_to_us.items(), key=lambda x: -x[1]),
+        size_by_retailer=size_by_retailer,
+        all_sizes=all_sizes,
+        comp_variants_seen=comp_variants_seen,
+        comp_variants_sized=comp_variants_sized)
 
 
 @bp.route('/match-progress/<task_id>')
