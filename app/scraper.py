@@ -183,14 +183,30 @@ def _parse_mcg_page(html, page, MCG_BASE):
         if not title:
             continue
 
-        # Price
-        price_el = (card.select_one('.price--withoutTax') or
-                    card.select_one('.price') or
-                    card.select_one('[data-product-price]'))
-        price_text = price_el.get_text(strip=True) if price_el else ''
-        price_match = re.search(r'[\d]+\.?\d*', price_text.replace(',', ''))
-        price = float(price_match.group()) if price_match else 0.0
-        is_from = 'from' in price_text.lower()
+        # Price. On sale items MCG renders both the sale price and an
+        # "MSRP: $X" / struck-through regular price. We want what the customer
+        # actually pays, so ignore RRP/MSRP nodes and take the lowest remaining.
+        price_els = card.select('.price--withoutTax') or card.select('.price')
+        candidates = []
+        for el in price_els:
+            cls = ' '.join(el.get('class') or [])
+            if 'rrp' in cls.lower() or 'non-sale' in cls.lower():
+                continue   # struck-through regular price
+            txt = el.get_text(strip=True)
+            if 'msrp' in txt.lower():
+                continue
+            m = re.search(r'[\d]+\.?\d*', txt.replace(',', ''))
+            if m:
+                candidates.append(float(m.group()))
+
+        if not candidates:
+            price_el = card.select_one('[data-product-price]')
+            txt = price_el.get_text(strip=True) if price_el else ''
+            m = re.search(r'[\d]+\.?\d*', txt.replace(',', ''))
+            if m:
+                candidates.append(float(m.group()))
+
+        price = min(candidates) if candidates else 0.0
 
         if price == 0:
             continue
@@ -198,8 +214,10 @@ def _parse_mcg_page(html, page, MCG_BASE):
         products.append({
             'id': slug, 'title': title, 'handle': slug,
             'product_type': '', 'body_html': '', 'images': [],
+            # title is overwritten with the real pot size (e.g. '2.0" Pot')
+            # by _fetch_mcg_size_map() after all pages are collected
             'variants': [{'id': f'{slug}-default',
-                          'title': 'From' if is_from else 'Default',
+                          'title': 'Default',
                           'price': str(price), 'available': True, 'sku': ''}],
             '_url_override': href,
         })
@@ -210,6 +228,92 @@ def _parse_mcg_page(html, page, MCG_BASE):
                  soup.select_one('.pagination-next a'))
     has_next = bool(next_link)
     return products, has_next
+
+
+# Mountain Crest exposes a "Product Size" facet on /explore-all/. Each MCG
+# product is a single SKU at one fixed pot size (the 3.5" version of a plant is
+# a separate listing, usually suffixed "[large]"), so the facet tells us the
+# exact size for every product — no need to fetch ~700 product pages.
+# Values are the facet labels exactly as MCG spells them, including duplicates
+# that differ only by quote style.
+MCG_SIZE_FACETS = [
+    '1.2" Plug',
+    '1.5" Plug',
+    '2" Pot',
+    '2.0" Pot',
+    "2.0'' Pot",
+    '2.5" Pot',
+    '3.0" Pot',
+    '3.5',
+    '3.5" Pot',
+    "3.5'' Pot",
+]
+
+
+def _normalize_mcg_size(label):
+    """Turn a raw MCG facet label into a form extract_size() can read.
+
+    MCG spells the same size several ways ('2.0" Pot', "2.0'' Pot", '2" Pot')
+    and one facet is a bare number ('3.5'). Normalize all to '<n>" <kind>'.
+    """
+    m = re.search(r'(\d+(?:\.\d+)?)', label or '')
+    if not m:
+        return label
+    num = m.group(1)
+    kind = 'Plug' if 'plug' in (label or '').lower() else 'Pot'
+    return f'{num}" {kind}'
+
+
+def _fetch_mcg_size_map(fetch_page, MCG_BASE):
+    """Return {product_slug: size_label} by walking each Product Size facet.
+
+    Pagination note: MCG's pagination links drop the _bc_fsnf=1 parameter but
+    keep the size filter, so we build page URLs as ?Product+Size=...&page=N.
+    """
+    from bs4 import BeautifulSoup
+    from urllib.parse import quote_plus
+
+    size_map = {}
+    for label in MCG_SIZE_FACETS:
+        encoded = quote_plus(label)
+        page = 1
+        found_for_label = 0
+        while True:
+            url = f'{MCG_BASE}/explore-all/?Product+Size={encoded}&page={page}'
+            try:
+                status, html = fetch_page(url)
+                if status != 200 or not html:
+                    break
+                soup = BeautifulSoup(html, 'html.parser')
+                cards = soup.select('article.card') or soup.select('[data-product-id]')
+                if not cards:
+                    break
+                new_on_page = 0
+                for card in cards:
+                    a = card.select_one('a[href]')
+                    if not a:
+                        continue
+                    href = a.get('href', '')
+                    if any(x in href for x in ['/explore-all', '/categories', 'javascript', '#']):
+                        continue
+                    slug = href.rstrip('/').split('/')[-1]
+                    if slug and slug not in size_map:
+                        size_map[slug] = _normalize_mcg_size(label)
+                        new_on_page += 1
+                found_for_label += new_on_page
+                # Last page reached when fewer than a full grid came back
+                if len(cards) < 36:
+                    break
+                page += 1
+                if page > 30:      # safety valve
+                    break
+                time.sleep(0.4)
+            except Exception as e:
+                print(f'[mcg] size facet {label!r} page {page} failed: {e}', flush=True)
+                break
+        print(f'[mcg] size "{label}": {found_for_label} products', flush=True)
+    print(f'[mcg] size map built: {len(size_map)} products have a known pot size', flush=True)
+    return size_map
 
 
 def fetch_mcg_bigcommerce():
@@ -319,6 +423,24 @@ def fetch_mcg_bigcommerce():
             raise
         except Exception as e:
             raise RuntimeError(f'MCG scraping failed on page {page}: {e}')
+
+    # Enrich with real pot sizes from the Product Size facet, so MCG prices can
+    # be compared size-for-size instead of falling back to entry-price matching.
+    try:
+        size_map = _fetch_mcg_size_map(_fetch_page, MCG_BASE)
+        sized = 0
+        for p in raw_products:
+            label = size_map.get(p['handle'])
+            if label:
+                # extract_size() reads e.g. '2.0" Pot' -> 2.0
+                p['variants'][0]['title'] = label
+                sized += 1
+        pct = (sized / len(raw_products) * 100) if raw_products else 0
+        print(f'[mcg] tagged {sized}/{len(raw_products)} products with a pot size ({pct:.0f}%)',
+              flush=True)
+    except Exception as e:
+        # Size enrichment is best-effort — never fail the whole scrape over it
+        print(f'[mcg] size enrichment skipped: {e}', flush=True)
 
     return raw_products
 
