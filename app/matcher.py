@@ -2,6 +2,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
+from functools import lru_cache
 from app.plant_names import shares_synonym_group, synonym_keywords
 
 # Words that don't help distinguish plant species
@@ -15,7 +16,7 @@ STOP_WORDS = {
 }
 
 # Minimum score to accept a match — everything below is skipped, nothing goes to review
-ACCEPT_THRESHOLD = 82
+ACCEPT_THRESHOLD = 70
 
 # Products that are not a single comparable plant. An arrangement or gift set
 # has no equivalent competitor product, so any price % would be meaningless.
@@ -125,9 +126,10 @@ def _keyword_search_terms(title):
     return [w for w in words if len(w) >= 4 and w not in STOP_WORDS]
 
 
+@lru_cache(maxsize=100_000)
 def _meaningful_words(title):
-    return {w for w in re.findall(r'[a-z]+', title.lower())
-            if len(w) >= 3 and w not in STOP_WORDS}
+    return frozenset(w for w in re.findall(r'[a-z]+', title.lower())
+                     if len(w) >= 3 and w not in STOP_WORDS)
 
 
 # Latin species endings that vary between sellers for the same plant,
@@ -143,8 +145,68 @@ def _latin_stem(word):
     return word
 
 
+@lru_cache(maxsize=100_000)
 def _stemmed_words(title):
-    return {_latin_stem(w) for w in _meaningful_words(title)}
+    return frozenset(_latin_stem(w) for w in _meaningful_words(title))
+
+
+# Colour/size words that are not distinctive on their own. A shared pair like
+# ('dark','rose') must not be treated as identifying the same plant.
+DESCRIPTORS = {
+    'dark', 'light', 'pale', 'deep', 'bright', 'giant', 'large', 'small',
+    'baby', 'mini', 'dwarf', 'tall', 'short', 'wide', 'thin',
+    'red', 'blue', 'green', 'gold', 'golden', 'silver', 'orange', 'pink',
+    'yellow', 'white', 'black', 'purple', 'violet', 'bronze', 'copper',
+    'variegated', 'striped', 'spotted', 'frosted', 'ghost', 'moon', 'rose',
+    'star', 'sunset', 'sunrise', 'fire', 'ice', 'snow', 'ruby', 'jade',
+    'hybrid', 'limited', 'grafted', 'assorted', 'mixed', 'special',
+}
+
+
+def _ordered_words(title):
+    """Meaningful words in title order, Latin-stemmed."""
+    words = [w for w in re.findall(r'[a-z]+', (title or '').lower())
+             if len(w) >= 3 and w not in STOP_WORDS]
+    return [_latin_stem(w) for w in words]
+
+
+@lru_cache(maxsize=100_000)
+def _bigrams(title):
+    """Adjacent stemmed word pairs, e.g. 'Crassula ovata Jade' -> {('crassula','ovata'), ...}
+
+    Only distinctive pairs are kept, so the intersection test is a plain
+    set operation with no per-pair filtering at compare time.
+    """
+    ws = _ordered_words(title)
+    return frozenset(p for p in ((ws[i], ws[i + 1]) for i in range(len(ws) - 1))
+                     if _is_distinctive(p))
+
+
+def _is_distinctive(pair):
+    """True if a word pair is specific enough to identify a plant on its own.
+
+    Requires at least one word that is 5+ characters and not a mere
+    colour/size descriptor — so ('mammillaria','plumosa') counts but
+    ('dark','rose') does not.
+    """
+    return any(len(w) >= 5 and w not in DESCRIPTORS for w in pair)
+
+
+def shares_distinctive_bigram(title_a, title_b):
+    """True if both titles contain the same distinctive adjacent word pair.
+
+    This is the strongest practical signal for plants: retailers pad titles
+    with different marketing words ('Plant', 'hybrid', '[large]', a common
+    name) but the scientific binomial stays adjacent and intact. Catches
+    'Haworthia Zebra - Haworthia fasciata Plant' == 'Haworthia fasciata'
+    while still rejecting 'Sedum adolphi' vs 'Sedum nussbaumerianum'.
+    """
+    return not _bigrams(title_a).isdisjoint(_bigrams(title_b))
+
+
+def _quoted_cultivars(title):
+    """All quoted cultivar names in a title, lowercased."""
+    return {m.lower().strip() for m in re.findall(r"['\"]([^'\"]{2,})['\"]", title or '')}
 
 
 def _extract_cultivar(title):
@@ -172,26 +234,28 @@ def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
     if shares_synonym_group(sb_title, comp_title):
         return 88  # strong match; will be auto-accepted
 
-    # 2. Cultivar guard — if SB has a specific cultivar, competitor must too
-    sb_cultivar = _extract_cultivar(sb_title)
-    if sb_cultivar:
-        comp_lower = comp_title.lower()
-        comp_cultivar = _extract_cultivar(comp_title)
-        # Check if cultivar words appear anywhere in competitor title
-        cultivar_words = set(re.findall(r'[a-z]+', sb_cultivar))
-        comp_words = set(re.findall(r'[a-z]+', comp_lower))
-        if not cultivar_words & comp_words:
-            return 0  # competitor doesn't have this cultivar — hard skip
+    # 2. Shared scientific binomial (or other distinctive adjacent pair).
+    #    Strongest signal — survives the extra marketing words each retailer
+    #    adds ('Plant', 'hybrid', '[large]', a common name alongside the latin).
+    if shares_distinctive_bigram(sb_title, comp_title):
+        return 90
 
-    a = re.sub(r'[^a-z0-9 ]', '', sb_title.lower())
-    b = re.sub(r'[^a-z0-9 ]', '', comp_title.lower())
-
-    # 3. Sequence ratio
-    seq = SequenceMatcher(None, a, b).ratio()
+    # 3. Cultivar guard — only reject when BOTH sides name a cultivar and they
+    #    disagree. If the competitor simply doesn't quote one, fall through to
+    #    word-overlap scoring rather than hard-rejecting: SB's quotes often hold
+    #    a common name ("Feather Cactus") rather than a true cultivar.
+    sb_cvs = _quoted_cultivars(sb_title)
+    comp_cvs = _quoted_cultivars(comp_title)
+    if sb_cvs and comp_cvs:
+        sb_cv_words = {w for cv in sb_cvs for w in re.findall(r'[a-z]+', cv)}
+        comp_cv_words = {w for cv in comp_cvs for w in re.findall(r'[a-z]+', cv)}
+        if not (sb_cv_words & comp_cv_words):
+            return 0   # both name a cultivar, and they're different plants
 
     # 4. Jaccard on meaningful words — computed twice, once on the raw words
     #    and once on Latin-stemmed words, taking whichever agrees more. This
     #    lets 'Rhipsalis Paradox' match 'Rhipsalis paradoxa'.
+    #    Cheap set maths, so do it before the costly sequence comparison.
     wa = _meaningful_words(sb_title)
     wb = _meaningful_words(comp_title)
     union = wa | wb
@@ -202,6 +266,17 @@ def _score_match(sb_title, comp_title, sb_type=None, comp_type=None):
     s_union = sa | sb_
     if s_union:
         jaccard = max(jaccard, len(sa & sb_) / len(s_union))
+
+    # Early exit: even a perfect sequence ratio couldn't reach the threshold
+    # from here, so skip SequenceMatcher entirely for hopeless pairs.
+    if (jaccard * 0.65 + 0.35) * 100 + 5 < ACCEPT_THRESHOLD:
+        return round(jaccard * 65)
+
+    a = re.sub(r'[^a-z0-9 ]', '', sb_title.lower())
+    b = re.sub(r'[^a-z0-9 ]', '', comp_title.lower())
+
+    # 5. Sequence ratio
+    seq = SequenceMatcher(None, a, b).ratio()
 
     # Combine: word overlap is the stronger signal for plant names
     score = (jaccard * 0.65 + seq * 0.35) * 100
@@ -338,19 +413,22 @@ def run_matching(db_conn, plant_types=None, sources=None, task_id=None):
         extra_terms = synonym_keywords(sb_title)  # scientific/alt names from synonym groups
         all_terms = list(dict.fromkeys(search_terms + list(extra_terms)))  # deduplicated
 
+        # Search the RAREST terms first. A common genus word like 'echeveria'
+        # matches hundreds of variants, so leading with it and then capping the
+        # list meant the real match was often never scored at all.
+        all_terms.sort(key=lambda t: len(keyword_index.get(t, ())))
+
         seen_variant_ids = set()
         candidates_raw = []
-        MAX_CANDIDATES = 30
+        MAX_CANDIDATES = 400
         for term in all_terms[:8]:
             for row in keyword_index.get(term, []):
                 vid = row[4]
                 if vid not in seen_variant_ids and (sb_id, vid) not in existing_matches:
                     seen_variant_ids.add(vid)
                     candidates_raw.append(row)
-                    if len(candidates_raw) >= MAX_CANDIDATES:
-                        break  # enough candidates — stop scanning this term
             if len(candidates_raw) >= MAX_CANDIDATES:
-                break  # enough across all terms
+                break
 
         if not candidates_raw:
             continue

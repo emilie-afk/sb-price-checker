@@ -148,6 +148,19 @@ def dashboard():
     plant_types = [pt for pt in all_types if _is_plant(pt)]
     non_plant_types = [pt for pt in all_types if not _is_plant(pt)]
 
+    # The MCG worker command, built from environment variables so no local
+    # folder path is ever committed to the repo.
+    #   MCG_WORKER_DIR — just the folder; we build the full one-liner
+    #   MCG_WORKER_CMD — a complete command, used as-is (takes precedence)
+    # With neither set, fall back to a path-free command.
+    mcg_worker_cmd = os.environ.get('MCG_WORKER_CMD')
+    if not mcg_worker_cmd:
+        worker_dir = os.environ.get('MCG_WORKER_DIR')
+        if worker_dir:
+            mcg_worker_cmd = f'cd "{worker_dir}"; python mcg_worker.py'
+        else:
+            mcg_worker_cmd = 'python mcg_worker.py'
+
     return render_template('dashboard.html',
         sb_count=sb_count,
         sb_synced=sb_synced,
@@ -159,6 +172,7 @@ def dashboard():
         by_source=by_source,
         recent_log=recent_log,
         mcg_queue=mcg_queue,
+        mcg_worker_cmd=mcg_worker_cmd,
         plant_types=plant_types,
         non_plant_types=non_plant_types,
         today_date=(datetime.utcnow() + timedelta(hours=7)).strftime('%Y-%m-%d'))
@@ -224,8 +238,11 @@ def products():
     competitors = [(src, source_labels[src]) for src in competitor_order if src in active_sources]
 
     # Per-competitor avg diff: product_id -> {source_key: avg_diff}
+    # Also track whether any of those matches was an exact same-size comparison,
+    # so the table can mark entry-price rows as approximate.
     source_diffs_rows = db.execute('''
-        SELECT m.sb_product_id, cp.source, AVG(m.price_diff_pct) as avg_diff
+        SELECT m.sb_product_id, cp.source, AVG(m.price_diff_pct) as avg_diff,
+               MAX(CASE WHEN m.relationship='exact' THEN 1 ELSE 0 END) as has_exact
         FROM matches m
         JOIN competitor_variants cv ON cv.id = m.competitor_variant_id
         JOIN competitor_products cp ON cp.id = cv.product_id
@@ -235,13 +252,16 @@ def products():
         GROUP BY m.sb_product_id, cp.source
     ''').fetchall()
 
-    source_diffs = {}   # product_id -> {source_key: diff}
+    source_diffs = {}    # product_id -> {source_key: diff}
+    source_exact = {}    # product_id -> {source_key: bool}
     for r in source_diffs_rows:
-        pid, src, diff = r[0], r[1], r[2]
+        pid, src, diff, has_exact = r[0], r[1], r[2], r[3]
         source_diffs.setdefault(pid, {})[src] = diff
+        source_exact.setdefault(pid, {})[src] = bool(has_exact)
 
     return render_template('products.html', products=rows, position_filter=position,
-                           competitors=competitors, source_diffs=source_diffs)
+                           competitors=competitors, source_diffs=source_diffs,
+                           source_exact=source_exact)
 
 
 @bp.route('/products/<int:product_id>')

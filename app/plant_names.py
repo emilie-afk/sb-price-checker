@@ -215,6 +215,22 @@ SYNONYM_GROUPS = [
 
 # ── Index build ────────────────────────────────────────────────────────────────
 
+# Bare genus names must never be indexed on their own. A genus covers dozens of
+# different species, so indexing 'mammillaria' made every Mammillaria match
+# every other Mammillaria. Common names that merely look like one word
+# ('moonstones', 'porkbush', 'taro') are fine and stay indexed.
+GENUS_ONLY = {
+    'alocasia', 'caladium', 'calathea', 'colocasia', 'crassula', 'delosperma',
+    'disocactus', 'dudleya', 'echeveria', 'epiphyllum', 'euphorbia',
+    'ferocactus', 'gasteria', 'graptopetalum', 'haworthia', 'haworthiopsis',
+    'kalanchoe', 'lampranthus', 'lithops', 'mammillaria', 'opuntia',
+    'pachyphytum', 'peperomia', 'philodendron', 'pothos', 'rhipsalis',
+    'sansevieria', 'sedum', 'sempervivum', 'senecio', 'spathiphyllum',
+    'adromischus', 'agave', 'aloe', 'anthurium', 'cereus', 'cotyledon',
+    'curio', 'dracaena', 'monstera', 'portulacaria', 'rebutia', 'schlumbergera',
+}
+
+
 def _build_index():
     """Build a dict: phrase → group_index for fast lookup.
 
@@ -231,25 +247,37 @@ def _build_index():
         for name in group:
             phrase_groups[name].add(gid)
 
-    # Second pass: only keep phrases that belong to exactly one group
+    # Second pass: keep a phrase only if it is unambiguous (exactly one group)
+    # AND is not a bare genus name (which would match unrelated species).
     index = {}
     for phrase, gids in phrase_groups.items():
-        if len(gids) == 1:
-            index[phrase] = next(iter(gids))
+        if len(gids) != 1:
+            continue
+        if ' ' not in phrase and phrase in GENUS_ONLY:
+            continue
+        index[phrase] = next(iter(gids))
     return index
 
 
 _INDEX = _build_index()
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=100_000)
 def synonym_group_ids(title):
-    """Return the set of synonym group indices that this title belongs to."""
+    """Return the set of synonym group indices that this title belongs to.
+
+    Cached: matching compares the same titles thousands of times, and this
+    scans every indexed phrase, so it dominated runtime uncached.
+    """
     t = title.lower()
     hits = set()
     for phrase, gid in _INDEX.items():
         if phrase in t:
             hits.add(gid)
-    return hits
+    return frozenset(hits)
 
 
 def synonym_keywords(title):
