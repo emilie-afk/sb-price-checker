@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Match Diagnostics{% endblock %}
+
+{% macro src(k) %}{{ source_labels.get(k, k) }}{% endmacro %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Match Diagnostics</h1>
+  <p class="text-gray-500 text-sm mt-1">
+    Why candidate pairs were skipped. Recalculated live — nothing here is saved.
+  </p>
+</div>
+
+<!-- ── Size gaps ─────────────────────────────────────────────── -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-8">
+  <div class="p-5 border-b border-gray-100">
+    <h2 class="text-lg font-semibold text-gray-800">Skipped: size we don't stock</h2>
+    <p class="text-sm text-gray-500 mt-1">
+      The name matched, but the competitor's size is more than 0.75&quot; from anything we sell.
+      A <span class="font-medium text-amber-700">small gap</span> means we're losing a comparison
+      that's arguably fair; a large gap is a genuine range difference.
+    </p>
+  </div>
+
+  {% if size_gaps %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 border-b border-gray-200">
+        <tr>
+          <th class="text-left px-4 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Their size</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Our nearest</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Gap</th>
+          <th class="text-right px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Pairs lost</th>
+          <th class="text-left px-4 py-2.5 font-semibold text-gray-600">Examples</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in size_gaps %}
+        <tr class="border-b border-gray-100 align-top">
+          <td class="px-4 py-3 font-mono text-xs whitespace-nowrap">
+            {% if g.comp_size is not none %}{{ "%g"|format(g.comp_size) }}&quot;
+            {% else %}<span class="text-gray-400">no size</span>{% endif %}
+          </td>
+          <td class="px-3 py-3 font-mono text-xs whitespace-nowrap">
+            {% if g.nearest is not none %}{{ "%g"|format(g.nearest) }}&quot;
+            {% else %}<span class="text-gray-400">—</span>{% endif %}
+          </td>
+          <td class="px-3 py-3 whitespace-nowrap">
+            {% if g.gap is not none %}
+              <span class="font-mono text-xs font-semibold px-2 py-0.5 rounded-full
+                {% if g.gap <= 1.5 %}bg-amber-100 text-amber-800{% else %}bg-gray-100 text-gray-600{% endif %}">
+                {{ "%.1f"|format(g.gap) }}&quot;
+              </span>
+              {% if g.gap <= 1.5 %}<span class="text-xs text-amber-700 ml-1">close</span>{% endif %}
+            {% else %}<span class="text-gray-300">—</span>{% endif %}
+          </td>
+          <td class="px-3 py-3 text-right font-semibold text-gray-700">{{ g.count }}</td>
+          <td class="px-4 py-3">
+            {% for s in g.samples[:3] %}
+            <div class="text-xs text-gray-600 mb-1 leading-snug">
+              <span class="text-gray-800">{{ s.sb_title }}</span>
+              <span class="text-gray-400">vs</span>
+              <a href="{{ s.url }}" target="_blank" rel="noopener"
+                 class="text-brand-700 hover:underline">{{ s.comp_title }}</a>
+              <span class="text-gray-400">({{ src(s.source) }}, ${{ "%.2f"|format(s.comp_price) }})</span>
+              {% if s.our_sizes %}
+              <span class="text-gray-400">— we have
+                {% for z in s.our_sizes %}{{ "%g"|format(z) }}&quot;{% if not loop.last %}, {% endif %}{% endfor %}
+              </span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="p-6 text-sm text-gray-400">No size-based skips.</p>
+  {% endif %}
+</div>
+
+<!-- ── Price outliers ────────────────────────────────────────── -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-8">
+  <div class="p-5 border-b border-gray-100">
+    <h2 class="text-lg font-semibold text-gray-800">Skipped: extreme price gap</h2>
+    <p class="text-sm text-gray-500 mt-1">
+      The name matched but the price differs by more than +300% or −75%. Usually a
+      <span class="font-medium">wrong pairing</span> rather than a real price gap — scan the
+      titles below and tell me any that shouldn't have matched.
+    </p>
+  </div>
+
+  {% if outliers %}
+  <div class="overflow-x-auto" style="max-height:26rem; overflow-y:auto;">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 border-b border-gray-200" style="position:sticky; top:0; z-index:10;">
+        <tr>
+          <th class="text-left px-4 py-2.5 font-semibold text-gray-600">Our plant</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600">Their plant</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Source</th>
+          <th class="text-right px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Ours</th>
+          <th class="text-right px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Theirs</th>
+          <th class="text-right px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Diff</th>
+          <th class="text-center px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in outliers %}
+        <tr class="border-b border-gray-100 hover:bg-gray-50">
+          <td class="px-4 py-2 text-xs text-gray-800" style="max-width:220px;">{{ o.sb_title }}</td>
+          <td class="px-3 py-2 text-xs" style="max-width:220px;">
+            <a href="{{ o.url }}" target="_blank" rel="noopener" class="text-brand-700 hover:underline">{{ o.comp_title }}</a>
+            {% if o.size %}<span class="text-gray-400 font-mono"> {{ "%g"|format(o.size) }}&quot;</span>{% endif %}
+            {% if o.tier == 'entry' %}<span class="text-gray-400" title="entry-price comparison">~</span>{% endif %}
+          </td>
+          <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ src(o.source) }}</td>
+          <td class="px-3 py-2 text-right font-mono text-xs">${{ "%.2f"|format(o.sb_price) }}</td>
+          <td class="px-3 py-2 text-right font-mono text-xs">${{ "%.2f"|format(o.comp_price) }}</td>
+          <td class="px-3 py-2 text-right">
+            <span class="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+              {% if o.diff > 0 %}+{% endif %}{{ "%.0f"|format(o.diff) }}%
+            </span>
+          </td>
+          <td class="px-3 py-2 text-center text-xs text-gray-500">{{ o.score }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="p-6 text-sm text-gray-400">No price outliers.</p>
+  {% endif %}
+</div>
+
+<!-- ── Name near misses ──────────────────────────────────────── -->
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-8">
+  <div class="p-5 border-b border-gray-100">
+    <h2 class="text-lg font-semibold text-gray-800">Near misses on name</h2>
+    <p class="text-sm text-gray-500 mt-1">
+      Scored just under the {{ threshold }} threshold. If real matches appear here, the
+      matching rules need a tweak — not the threshold.
+    </p>
+  </div>
+
+  {% if near_misses %}
+  <div class="overflow-x-auto" style="max-height:26rem; overflow-y:auto;">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 border-b border-gray-200" style="position:sticky; top:0; z-index:10;">
+        <tr>
+          <th class="text-center px-4 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Score</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600">Our plant</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600">Their plant</th>
+          <th class="text-left px-3 py-2.5 font-semibold text-gray-600 whitespace-nowrap">Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for n in near_misses %}
+        <tr class="border-b border-gray-100 hover:bg-gray-50">
+          <td class="px-4 py-2 text-center">
+            <span class="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800">{{ n.score }}</span>
+          </td>
+          <td class="px-3 py-2 text-xs text-gray-800" style="max-width:260px;">{{ n.sb_title }}</td>
+          <td class="px-3 py-2 text-xs" style="max-width:260px;">
+            <a href="{{ n.url }}" target="_blank" rel="noopener" class="text-brand-700 hover:underline">{{ n.comp_title }}</a>
+          </td>
+          <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ src(n.source) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="p-6 text-sm text-gray-400">No near misses.</p>
+  {% endif %}
+</div>
+{% endblock %}

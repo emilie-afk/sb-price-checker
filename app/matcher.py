@@ -298,6 +298,190 @@ def _determine_relationship(score, sb_variant_title, comp_variant_title):
     return 'comparable'
 
 
+def run_diagnostics(db_conn, max_samples=300):
+    """Read-only pass that explains WHY candidate pairs were skipped.
+
+    Mirrors run_matching's candidate selection and scoring but writes nothing.
+    Returns three views:
+      size_gaps    — competitor size vs our nearest size, with counts/samples
+      outliers     — accepted-by-name pairs rejected for an extreme price gap
+      near_misses  — pairs that scored just below the name threshold
+    """
+    cursor = db_conn.cursor()
+
+    cursor.execute('SELECT id, title, product_type FROM sb_products '
+                   'WHERE tracked=1 AND COALESCE(in_stock,1)=1')
+    sb_products = cursor.fetchall()
+
+    cursor.execute('SELECT product_id, variant_title, price, available FROM sb_variants')
+    sb_variants_by_product = defaultdict(list)
+    for r in cursor.fetchall():
+        sb_variants_by_product[r[0]].append(
+            {'variant_title': r[1], 'price': float(r[2] or 0), 'available': r[3]})
+
+    cursor.execute('''
+        SELECT cp.source, cp.title, cp.product_type, cp.url,
+               cv.id, cv.variant_title, cv.price, cv.available
+        FROM competitor_products cp
+        JOIN competitor_variants cv ON cv.product_id = cp.id
+        WHERE cv.price > 0 AND cv.available = 1
+    ''')
+    all_variants = cursor.fetchall()
+
+    keyword_index = defaultdict(list)
+    for row in all_variants:
+        for word in re.findall(r"[a-zA-Z']+", row[1].lower()):
+            if len(word) >= 4 and word not in STOP_WORDS:
+                keyword_index[word].append(row)
+
+    size_gaps = defaultdict(lambda: {'count': 0, 'samples': []})
+    outliers, near_misses = [], []
+
+    for sb_row in sb_products:
+        sb_id, sb_title, sb_type = sb_row[0], sb_row[1], sb_row[2]
+        if not is_comparable_plant(sb_title, sb_type):
+            continue
+        sb_variants = sb_variants_by_product.get(sb_id, [])
+        usable = [v for v in sb_variants if v.get('available') and v['price'] > 0]
+        if not usable:
+            continue
+        our_sizes = sorted({s for s in (extract_size(v['variant_title']) for v in usable)
+                            if s is not None})
+
+        terms = list(dict.fromkeys(_keyword_search_terms(sb_title)
+                                   + list(synonym_keywords(sb_title))))
+        terms.sort(key=lambda t: len(keyword_index.get(t, ())))
+        seen, candidates = set(), []
+        for term in terms[:8]:
+            for row in keyword_index.get(term, []):
+                if row[4] not in seen:
+                    seen.add(row[4])
+                    candidates.append(row)
+            if len(candidates) >= 400:
+                break
+
+        for row in candidates:
+            score = _score_match(sb_title, row[1], sb_type, row[2])
+
+            if score < ACCEPT_THRESHOLD:
+                # Only the plausible near-misses are interesting
+                if score >= ACCEPT_THRESHOLD - 15 and len(near_misses) < max_samples:
+                    near_misses.append({
+                        'score': score, 'sb_title': sb_title,
+                        'comp_title': row[1], 'source': row[0], 'url': row[3],
+                    })
+                continue
+
+            if not is_comparable_plant(row[1], row[2]):
+                continue
+
+            comp_price = float(row[6] or 0)
+            sb_price, matched_size, tier = _comparable_sb_price(sb_variants, row[5], row[1])
+
+            if not sb_price or sb_price <= 0 or comp_price <= 0:
+                comp_size = extract_size(row[5]) or extract_size(row[1])
+                nearest = None
+                if comp_size is not None and our_sizes:
+                    nearest = min(our_sizes, key=lambda s: abs(s - comp_size))
+                key = (comp_size, nearest)
+                g = size_gaps[key]
+                g['count'] += 1
+                if len(g['samples']) < 5:
+                    g['samples'].append({
+                        'sb_title': sb_title, 'comp_title': row[1],
+                        'source': row[0], 'our_sizes': our_sizes,
+                        'comp_price': comp_price, 'url': row[3],
+                    })
+                continue
+
+            diff = (comp_price - sb_price) / sb_price * 100
+            if diff < -75 or diff > 300:
+                if len(outliers) < max_samples:
+                    outliers.append({
+                        'sb_title': sb_title, 'comp_title': row[1], 'source': row[0],
+                        'sb_price': sb_price, 'comp_price': comp_price,
+                        'diff': diff, 'score': score,
+                        'size': matched_size, 'tier': tier, 'url': row[3],
+                    })
+
+    gaps = []
+    for (comp_size, nearest), g in size_gaps.items():
+        gap = abs(comp_size - nearest) if (comp_size is not None and nearest is not None) else None
+        gaps.append({'comp_size': comp_size, 'nearest': nearest, 'gap': gap,
+                     'count': g['count'], 'samples': g['samples']})
+    gaps.sort(key=lambda x: -x['count'])
+
+    outliers.sort(key=lambda x: x['diff'])
+    near_misses.sort(key=lambda x: -x['score'])
+    return {'size_gaps': gaps, 'outliers': outliers, 'near_misses': near_misses}
+
+
+def run_assortment_gaps(db_conn):
+    """Plants a competitor sells that we don't carry at all.
+
+    This is a NAME-only test on purpose: a product is a gap only if no SB
+    product refers to the same plant. Size and price are ignored, so a plant
+    we stock in a different size still counts as carried.
+    """
+    cursor = db_conn.cursor()
+
+    cursor.execute('SELECT id, title, product_type FROM sb_products WHERE tracked=1')
+    sb_rows = [r for r in cursor.fetchall() if is_comparable_plant(r[1], r[2])]
+
+    # Index OUR catalogue so we can look up each competitor product against it
+    sb_index = defaultdict(list)
+    for r in sb_rows:
+        terms = set(_keyword_search_terms(r[1])) | synonym_keywords(r[1])
+        for w in terms:
+            sb_index[w].append(r)
+
+    # One row per competitor PRODUCT (cheapest available variant for context)
+    cursor.execute('''
+        SELECT cp.source, cp.title, cp.product_type, cp.url, MIN(cv.price) as price
+        FROM competitor_products cp
+        JOIN competitor_variants cv ON cv.product_id = cp.id
+        WHERE cv.price > 0 AND cv.available = 1
+        GROUP BY cp.id, cp.source, cp.title, cp.product_type, cp.url
+    ''')
+    comp_products = cursor.fetchall()
+
+    gaps = defaultdict(list)     # source -> [ {title, url, price} ]
+    carried = defaultdict(int)   # source -> count we do carry
+    for source, title, ptype, url, price in comp_products:
+        if not is_comparable_plant(title, ptype):
+            continue
+
+        terms = list(dict.fromkeys(_keyword_search_terms(title)
+                                   + list(synonym_keywords(title))))
+        terms.sort(key=lambda t: len(sb_index.get(t, ())))
+        seen, best = set(), 0
+        for term in terms[:8]:
+            for r in sb_index.get(term, []):
+                if r[0] in seen:
+                    continue
+                seen.add(r[0])
+                s = _score_match(r[1], title, r[2], ptype)
+                if s > best:
+                    best = s
+                    if best >= ACCEPT_THRESHOLD:
+                        break
+            if best >= ACCEPT_THRESHOLD:
+                break
+
+        if best >= ACCEPT_THRESHOLD:
+            carried[source] += 1
+        else:
+            gaps[source].append({'title': title, 'url': url,
+                                 'price': float(price or 0), 'best_score': best})
+
+    for src in gaps:
+        gaps[src].sort(key=lambda g: g['title'].lower())
+
+    totals = {src: {'gaps': len(gaps.get(src, [])), 'carried': carried.get(src, 0)}
+              for src in set(list(gaps.keys()) + list(carried.keys()))}
+    return {'gaps': dict(gaps), 'totals': totals}
+
+
 _progress: dict = {}   # task_id → {done, total, matched, skipped}
 
 
