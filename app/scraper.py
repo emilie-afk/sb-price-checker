@@ -310,20 +310,34 @@ def sync_sb_products(db_conn):
             url = f"https://succulentsbox.com/products/{handle}" if handle else None
 
             variants = raw.get('variants', [])
-            prices = []
+            # Only count IN-STOCK variants toward price_min/price_max.
+            # A sold-out variant's price is not a price we can actually be
+            # compared on, and including it produced bogus price diffs
+            # (e.g. a sold-out $215 Hoya being compared against competitors).
+            in_stock_prices = []
+            all_prices = []
             for v in variants:
                 try:
-                    prices.append(float(v.get('price', 0)))
+                    p = float(v.get('price', 0))
                 except (ValueError, TypeError):
-                    pass
+                    continue
+                if p <= 0:
+                    continue
+                all_prices.append(p)
+                if v.get('available', True):
+                    in_stock_prices.append(p)
+
+            prices = in_stock_prices  # prefer in-stock only
             price_min = min(prices) if prices else 0
             price_max = max(prices) if prices else 0
+            # in_stock = 0 means every variant is sold out → hidden from reports
+            in_stock = 1 if in_stock_prices else 0
 
             # Upsert product, get id back
             row = cursor.execute('''
                 INSERT INTO sb_products (external_id, title, handle, product_type, url,
-                                         price_min, price_max, synced_at, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                         price_min, price_max, in_stock, synced_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(external_id) DO UPDATE SET
                     title=EXCLUDED.title,
                     handle=EXCLUDED.handle,
@@ -331,10 +345,11 @@ def sync_sb_products(db_conn):
                     url=EXCLUDED.url,
                     price_min=EXCLUDED.price_min,
                     price_max=EXCLUDED.price_max,
+                    in_stock=EXCLUDED.in_stock,
                     synced_at=EXCLUDED.synced_at
                 RETURNING id
             ''', (external_id, title, handle, product_type, url,
-                  price_min, price_max, now, now)).fetchone()
+                  price_min, price_max, in_stock, now, now)).fetchone()
             product_id = row[0]
 
             # Load existing variants for this product (one SELECT per product)

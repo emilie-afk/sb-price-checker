@@ -102,6 +102,7 @@ _TABLES = [
         price_min   REAL DEFAULT 0,
         price_max   REAL DEFAULT 0,
         tracked     INTEGER DEFAULT 1,
+        in_stock    INTEGER DEFAULT 1,
         synced_at   TEXT,
         created_at  TEXT
     )
@@ -193,10 +194,22 @@ _TABLES = [
 ]
 
 
+# Schema changes for tables that already exist in the database.
+# Safe to run repeatedly — IF NOT EXISTS makes each a no-op once applied.
+_MIGRATIONS = [
+    'ALTER TABLE sb_products ADD COLUMN IF NOT EXISTS in_stock INTEGER DEFAULT 1',
+]
+
+
 def init_db():
     db = _connect()
     for stmt in _TABLES:
         db.execute(stmt)
+    for stmt in _MIGRATIONS:
+        try:
+            db.execute(stmt)
+        except Exception as e:
+            print(f'[migration] skipped ({e}): {stmt}', flush=True)
     db.commit()
     db.close()
     current_app.teardown_appcontext(close_db)
