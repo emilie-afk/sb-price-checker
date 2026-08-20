@@ -570,6 +570,40 @@ def mcg_status():
     return jsonify({'status': row[0], 'message': row[1], 'completed_at': row[2]})
 
 
+@bp.route('/assortment-gaps')
+def assortment_gaps():
+    """Plants competitors carry that we don't."""
+    from .matcher import run_assortment_gaps
+    source_labels = {
+        'mountain_crest': 'Mountain Crest', 'planet_desert': 'Planet Desert',
+        'house_plant_shop': 'House Plant Shop', 'the_sill': 'The Sill',
+        'bloomscape': 'Bloomscape',
+    }
+    data = run_assortment_gaps(get_db())
+    only = request.args.get('source')
+    return render_template('assortment_gaps.html',
+                           gaps=data['gaps'], totals=data['totals'],
+                           source_labels=source_labels, only=only)
+
+
+@bp.route('/diagnostics')
+def diagnostics():
+    """Explain why candidate pairs were skipped during matching."""
+    from .matcher import run_diagnostics, ACCEPT_THRESHOLD
+    source_labels = {
+        'mountain_crest': 'MCG', 'planet_desert': 'Planet Desert',
+        'house_plant_shop': 'House Plant Shop', 'the_sill': 'The Sill',
+        'bloomscape': 'Bloomscape',
+    }
+    data = run_diagnostics(get_db())
+    return render_template('diagnostics.html',
+                           size_gaps=data['size_gaps'],
+                           outliers=data['outliers'],
+                           near_misses=data['near_misses'],
+                           source_labels=source_labels,
+                           threshold=ACCEPT_THRESHOLD)
+
+
 @bp.route('/size-gaps')
 def size_gaps():
     """Size coverage: which sizes we offer that competitors don't, and vice versa.
