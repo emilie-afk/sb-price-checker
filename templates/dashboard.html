@@ -384,7 +384,7 @@
               {{ log[2] }}
             </span>
             {% if log[2] != 'success' %}
-            <button onclick="retrySource('{{ log[0] }}')"
+            <button data-source="{{ log[0] }}" onclick="retrySource(this.dataset.source)"
               class="text-xs text-brand-600 hover:underline mt-1 block">↺ Retry</button>
             {% endif %}
             {% if log[2] != 'success' and log[3] %}

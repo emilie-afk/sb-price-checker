@@ -60,7 +60,7 @@
             <div class="text-xs text-gray-600 mb-1 leading-snug">
               <span class="text-gray-800">{{ s.sb_title }}</span>
               <span class="text-gray-400">vs</span>
-              <a href="{{ s.url }}" target="_blank" rel="noopener"
+              <a href="{{ s.url|safe_url }}" target="_blank" rel="noopener noreferrer"
                  class="text-brand-700 hover:underline">{{ s.comp_title }}</a>
               <span class="text-gray-400">({{ src(s.source) }}, ${{ "%.2f"|format(s.comp_price) }})</span>
               {% if s.our_sizes %}
@@ -111,7 +111,7 @@
         <tr class="border-b border-gray-100 hover:bg-gray-50">
           <td class="px-4 py-2 text-xs text-gray-800" style="max-width:220px;">{{ o.sb_title }}</td>
           <td class="px-3 py-2 text-xs" style="max-width:220px;">
-            <a href="{{ o.url }}" target="_blank" rel="noopener" class="text-brand-700 hover:underline">{{ o.comp_title }}</a>
+            <a href="{{ o.url|safe_url }}" target="_blank" rel="noopener noreferrer" class="text-brand-700 hover:underline">{{ o.comp_title }}</a>
             {% if o.size %}<span class="text-gray-400 font-mono"> {{ "%g"|format(o.size) }}&quot;</span>{% endif %}
             {% if o.tier == 'entry' %}<span class="text-gray-400" title="entry-price comparison">~</span>{% endif %}
           </td>
@@ -163,7 +163,7 @@
           </td>
           <td class="px-3 py-2 text-xs text-gray-800" style="max-width:260px;">{{ n.sb_title }}</td>
           <td class="px-3 py-2 text-xs" style="max-width:260px;">
-            <a href="{{ n.url }}" target="_blank" rel="noopener" class="text-brand-700 hover:underline">{{ n.comp_title }}</a>
+            <a href="{{ n.url|safe_url }}" target="_blank" rel="noopener noreferrer" class="text-brand-700 hover:underline">{{ n.comp_title }}</a>
           </td>
           <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ src(n.source) }}</td>
         </tr>
