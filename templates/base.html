@@ -4,6 +4,32 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Price Intelligence{% endblock %} — Succulents Box</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script>
+    // Same-origin fetch(): attach the CSRF token to state-changing requests and
+    // send expired sessions back to the login page instead of failing silently.
+    (function () {
+      const token = document.querySelector('meta[name="csrf-token"]').content;
+      const origFetch = window.fetch.bind(window);
+      window.fetch = async function (input, init) {
+        init = Object.assign({}, init || {});
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (url.origin === location.origin) {
+          const headers = new Headers(init.headers || {});
+          headers.set('X-Requested-With', 'fetch');
+          const method = (init.method || 'GET').toUpperCase();
+          if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('X-CSRFToken', token);
+          init.headers = headers;
+          init.credentials = 'same-origin';
+        }
+        const resp = await origFetch(input, init);
+        if (resp.status === 401 && url.origin === location.origin) {
+          location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+        }
+        return resp;
+      };
+    })();
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script>
@@ -69,10 +95,13 @@
              class="text-brand-100 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors">
             Export CSV
           </a>
-          <a href="{{ url_for('main.logout') }}"
-             class="text-brand-300 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors ml-2">
-            Sign Out
-          </a>
+          <form method="POST" action="{{ url_for('main.logout') }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+               class="text-brand-300 hover:text-white hover:bg-brand-700 px-3 py-2 rounded-md text-sm font-medium transition-colors ml-2">
+              Sign Out
+            </button>
+          </form>
         </div>
       </div>
     </div>
