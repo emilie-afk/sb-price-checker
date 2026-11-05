@@ -3,6 +3,16 @@ import requests
 import time
 import re
 from datetime import datetime
+from urllib.parse import quote, urlsplit
+
+from . import net as _net
+from .net import (safe_get, check_url_syntax, host_variants, SafeResponse,
+                  UnsafeURLError, ResponseTooLarge)
+from .security import redact, error_reference
+
+
+class CollectionError(RuntimeError):
+    """An expected collection failure whose message is safe to show in the UI."""
 
 COMPETITORS = {
     'planet_desert': {
@@ -37,6 +47,29 @@ COMPETITORS = {
 }
 
 SB_URL_TEMPLATE = 'https://succulentsbox.com/products.json?limit=250&page={page}'
+SB_BASE_URL = 'https://succulentsbox.com'
+
+
+def allowed_hosts_for(source_key):
+    """Approved hosts for a competitor key (bare and www. forms)."""
+    return host_variants(COMPETITORS[source_key]['base_url'])
+
+
+def _validated_store_url(url, hosts):
+    """Return url if it is an https link on one of `hosts`, else None."""
+    try:
+        return check_url_syntax(url, hosts)
+    except UnsafeURLError:
+        return None
+
+
+def _validated_image_url(url):
+    if not isinstance(url, str) or len(url) > 2048:
+        return None
+    parts = urlsplit(url)
+    if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
+        return None
+    return url
 
 HEADERS = {
     'User-Agent': 'SucculentsBox-PriceChecker/1.0 (internal pricing research tool)'
@@ -84,11 +117,14 @@ def _fetch_shopify_page(url_template, page, since_param):
     """Fetch one Shopify products.json page. Returns (page, products list)."""
     url = url_template.format(page=page) + since_param
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
+        # Only the store's own hosts are allowed, including on redirect
+        resp = safe_get(url, host_variants(url), headers=HEADERS, timeout=(10, 30))
         if resp.status_code != 200:
             return page, []
-        return page, resp.json().get('products', [])
-    except Exception:
+        products = resp.json().get('products', [])
+        return page, products if isinstance(products, list) else []
+    except Exception as e:
+        print(f'[shopify] page {page} failed: {type(e).__name__}', flush=True)
         return page, []
 
 
@@ -175,6 +211,9 @@ def _parse_mcg_page(html, page, MCG_BASE):
         if not href.startswith('http'):
             href = MCG_BASE + href
         if any(x in href for x in ['/explore-all', '/categories', 'javascript', '#']):
+            continue
+        # Scraped HTML is untrusted: only keep links that stay on MCG over https
+        if _validated_store_url(href, host_variants(MCG_BASE)) is None:
             continue
         slug = href.rstrip('/').split('/')[-1]
 
@@ -316,6 +355,82 @@ def _fetch_mcg_size_map(fetch_page, MCG_BASE):
     return size_map
 
 
+def _bounded_inflate(content):
+    """Decompress gzip/brotli bodies the server did not decode, within the size cap."""
+    import zlib
+    limit = _net.MAX_RESPONSE_BYTES
+    if content[:2] == b'\x1f\x8b':
+        try:
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            out = d.decompress(content, limit + 1)
+        except zlib.error:
+            return None
+        if len(out) > limit or d.unconsumed_tail:
+            raise ResponseTooLarge('decompressed response too large')
+        return out
+    if content[:1] in (b'\x1b', b'\x0b'):
+        try:
+            import brotli
+            dec = brotli.Decompressor()
+            out = dec.process(content, output_buffer_limit=limit + 1)
+        except (ImportError, TypeError, AttributeError):
+            return None     # brotli missing or too old to bound output: leave undecoded
+        except Exception:
+            return None
+        if len(out) > limit or not dec.is_finished():
+            raise ResponseTooLarge('decompressed response too large')
+        return out
+    return None
+
+
+def _decode_response(resp):
+    """Decode response content, handling gzip/brotli if not auto-decompressed."""
+    inflated = _bounded_inflate(resp.content or b'')
+    if inflated is not None:
+        return inflated.decode('utf-8', errors='replace')
+    # Fall back to resp.text (already decoded string)
+    return resp.text
+
+
+def _cffi_getter(url, headers, timeout, ip):
+    """curl_cffi GET pinned to the validated IP, with the size cap enforced in transfer.
+
+    Do NOT manually set Accept-Encoding — curl_cffi handles decompression via
+    Chrome impersonation, so the chunks counted here are decoded bytes. The
+    write callback aborts the transfer as soon as the cap would be exceeded.
+    Redirects are followed by safe_get(), which re-validates each hop.
+    """
+    from curl_cffi import requests as cf_requests
+    from curl_cffi import CurlOpt
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    host = urlsplit(url).hostname
+    pinned = f'[{ip}]' if ':' in ip else ip
+    options = {CurlOpt.RESOLVE: [f'{host}:443:{pinned}'],   # never re-resolve the name
+               CurlOpt.NOPROXY: '*'}                         # connect directly to the pinned IP
+    limit = _net.MAX_RESPONSE_BYTES
+    body = bytearray()
+    overflow = []
+
+    def on_chunk(chunk):
+        if len(body) + len(chunk) > limit:
+            overflow.append(True)
+            return CURL_WRITEFUNC_ERROR          # libcurl stops the download here
+        body.extend(chunk)
+        return len(chunk)
+
+    with cf_requests.Session(curl_options=options, use_thread_local_curl=False) as session:
+        try:
+            r = session.get(url, impersonate='chrome131', timeout=45, headers=headers,
+                            allow_redirects=False, content_callback=on_chunk)
+        except Exception:
+            if overflow:
+                raise ResponseTooLarge('response too large') from None
+            raise
+        if overflow:
+            raise ResponseTooLarge('response too large')
+        return SafeResponse(r.status_code, r.headers, bytes(body), url, r.encoding)
+
+
 def fetch_mcg_bigcommerce():
     """Fetch MCG products via BigCommerce HTML scraping.
     Tries curl-cffi (Chrome TLS fingerprint) first, then falls back to requests.
@@ -326,36 +441,13 @@ def fetch_mcg_bigcommerce():
     raw_products = []
     page = 1
 
-    # Try curl_cffi with Chrome impersonation first; fall back to plain requests
-    def _decode_response(resp):
-        """Decode response content, handling gzip/brotli if not auto-decompressed."""
-        import gzip as _gzip
-        content = resp.content
-        # Detect gzip magic bytes (0x1f 0x8b)
-        if content[:2] == b'\x1f\x8b':
-            try:
-                return _gzip.decompress(content).decode('utf-8', errors='replace')
-            except Exception:
-                pass
-        # Detect brotli (try brotli library if available)
-        if content[:1] == b'\x1b' or content[:1] == b'\x0b':
-            try:
-                import brotli
-                return brotli.decompress(content).decode('utf-8', errors='replace')
-            except Exception:
-                pass
-        # Fall back to resp.text (already decoded string)
-        return resp.text
+    mcg_hosts = host_variants(MCG_BASE)
 
+    # Try curl_cffi with Chrome impersonation first; fall back to plain HTTPS
     def _fetch_page(url):
         try:
-            from curl_cffi import requests as cf_requests
-            # Do NOT manually set Accept-Encoding — let curl_cffi handle
-            # decompression automatically via Chrome impersonation
-            resp = cf_requests.get(
-                url,
-                impersonate='chrome131',
-                timeout=45,
+            resp = safe_get(
+                url, mcg_hosts, getter=_cffi_getter,
                 headers={
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
@@ -373,11 +465,13 @@ def fetch_mcg_bigcommerce():
                 print(f'[mcg] curl_cffi ok: {len(html)} chars, starts: {repr(html[:60])}', flush=True)
                 if len(html) > 10000:
                     return resp.status_code, html
+        except UnsafeURLError:
+            raise
         except Exception as e:
-            print(f'[mcg] curl_cffi failed: {e}', flush=True)
+            print(f'[mcg] curl_cffi failed: {type(e).__name__}: {e}', flush=True)
 
         # Fallback: plain requests (auto-decompresses gzip/deflate, not brotli)
-        resp = requests.get(url, timeout=30, headers={
+        resp = safe_get(url, mcg_hosts, timeout=(10, 30), headers={
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -394,15 +488,15 @@ def fetch_mcg_bigcommerce():
             status, html = _fetch_page(url)
 
             if status == 403:
-                raise RuntimeError(f'MCG blocked (403) on page {page} — Cloudflare is blocking Render\'s server IP')
+                raise CollectionError(f'MCG blocked (403) on page {page} — Cloudflare is blocking Render\'s server IP')
             if status != 200:
-                raise RuntimeError(f'MCG returned HTTP {status} on page {page}')
+                raise CollectionError(f'MCG returned HTTP {status} on page {page}')
 
             soup_title = BeautifulSoup(html, 'html.parser').find('title')
             page_title = soup_title.get_text() if soup_title else 'unknown'
 
             if 'challenge' in html.lower() and len(html) < 8000:
-                raise RuntimeError(f'MCG returned Cloudflare challenge on page {page} (title: "{page_title}")')
+                raise CollectionError(f'MCG returned Cloudflare challenge on page {page} (title: "{page_title[:80]}")')
 
             page_products, has_next = _parse_mcg_page(html, page, MCG_BASE)
 
@@ -419,10 +513,10 @@ def fetch_mcg_bigcommerce():
             page += 1
             time.sleep(1.5)
 
-        except RuntimeError:
+        except CollectionError:
             raise
         except Exception as e:
-            raise RuntimeError(f'MCG scraping failed on page {page}: {e}')
+            raise CollectionError(f'MCG scraping failed on page {page} ({type(e).__name__})')
 
     # Enrich with real pot sizes from the Product Size facet, so MCG prices can
     # be compared size-for-size instead of falling back to entry-price matching.
@@ -492,7 +586,7 @@ def sync_sb_products(db_conn):
             title = raw.get('title', '').strip()
             handle = raw.get('handle', '')
             product_type = raw.get('product_type', '')
-            url = f"https://succulentsbox.com/products/{handle}" if handle else None
+            url = f"{SB_BASE_URL}/products/{quote(handle, safe='-_.')}" if handle else None
 
             variants = raw.get('variants', [])
             # Only count IN-STOCK variants toward price_min/price_max.
@@ -626,6 +720,8 @@ def fetch_products(source_key, since=None):
 
     if competitor.get('platform') == 'bigcommerce':
         return fetch_mcg_bigcommerce()  # BigCommerce HTML scrape — no since support
+    if competitor.get('platform') == 'manual':
+        raise CollectionError(f"{competitor['name']} is manual entry only")
 
     if 'url_template' in competitor:
         url_template = competitor['url_template']
@@ -640,11 +736,16 @@ def fetch_products(source_key, since=None):
 def parse_product(raw, source_key):
     """Extract standardized fields from a Shopify or BigCommerce product dict."""
     competitor = COMPETITORS[source_key]
-    images = raw.get('images', [])
-    image_url = images[0]['src'] if images else None
+    images = raw.get('images') or []
+    image_url = None
+    if images and isinstance(images[0], dict):
+        image_url = _validated_image_url(images[0].get('src'))
     desc = _strip_html(raw.get('body_html', ''))
-    handle = raw.get('handle', '')
-    url = raw.get('_url_override') or (f"{competitor['base_url']}/products/{handle}" if handle else None)
+    handle = str(raw.get('handle', '') or '')
+    url = raw.get('_url_override') or (
+        f"{competitor['base_url']}/products/{quote(handle, safe='-_.')}" if handle else None)
+    # Scraped data is untrusted: store only https links on the competitor's own site
+    url = _validated_store_url(url, allowed_hosts_for(source_key)) if url else None
 
     product = {
         'source': source_key,
@@ -726,7 +827,7 @@ def run_collection(db_conn, sources=None):
 
             if not prod_rows:
                 print(f'[collect] {source_key}: nothing to write', flush=True)
-                raise RuntimeError(f'{source_key} returned 0 usable products')
+                raise CollectionError(f'{source_key} returned 0 usable products')
 
             # 2. Bulk upsert products, getting external_id -> id back
             ext_to_id = {}
@@ -874,13 +975,23 @@ def run_collection(db_conn, sources=None):
                                     'delisted': delisted}
 
         except Exception as e:
-            print(f"[collect] {source_key} ERROR: {e}", flush=True)
-            import traceback; traceback.print_exc()
+            try:
+                db_conn.rollback()   # leave the connection usable after a failed statement
+            except Exception:
+                pass
+            if isinstance(e, CollectionError):
+                public = str(e)
+            else:
+                ref = error_reference()
+                public = f'Collection failed (ref {ref}) — see server logs'
+                print(f"[collect] {source_key} ref {ref}", flush=True)
+            print(f"[collect] {source_key} ERROR: {redact(e)}", flush=True)
+            import traceback; print(redact(traceback.format_exc()), flush=True)
             cursor.execute(
                 'INSERT INTO collection_log (source, products_found, status, message, ran_at) VALUES (%s, %s, %s, %s, %s)',
-                (source_key, 0, 'error', str(e), datetime.utcnow().isoformat())
+                (source_key, 0, 'error', public, datetime.utcnow().isoformat())
             )
             db_conn.commit()
-            results[source_key] = {'status': 'error', 'message': str(e)}
+            results[source_key] = {'status': 'error', 'message': public}
 
     return results
