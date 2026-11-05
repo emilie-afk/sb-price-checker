@@ -66,7 +66,7 @@
         {% for r in rows %}
         <tr class="border-b border-gray-100 hover:bg-gray-50 gap-row" data-name="{{ r.title|lower }}">
           <td class="px-4 py-2">
-            <a href="{{ r.url }}" target="_blank" rel="noopener"
+            <a href="{{ r.url|safe_url }}" target="_blank" rel="noopener noreferrer"
                class="text-xs font-medium text-brand-700 hover:underline leading-snug block">{{ r.title }}</a>
           </td>
           <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ source_labels.get(src_key, src_key) }}</td>

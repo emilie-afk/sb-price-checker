@@ -1,0 +1,25 @@
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local configuration and secrets — real values live in Render's environment settings
+.env
+.env.*
+!.env.example
+
+# Debug output, logs, exports, dumps and private operational inputs
+mcg_debug.html
+*.log
+*.csv
+*.sql.gz
+*.dump
+*.backup
+*.db
+*.sqlite*
+data/
+exports/
+private/

@@ -59,7 +59,7 @@
     <!-- Product title -->
     <div>
       {% if m[10] %}
-      <a href="{{ m[10] }}" target="_blank" class="font-semibold text-gray-900 hover:text-brand-700 hover:underline leading-tight block">
+      <a href="{{ m[10]|safe_url }}" target="_blank" rel="noopener noreferrer" class="font-semibold text-gray-900 hover:text-brand-700 hover:underline leading-tight block">
         {{ m[8] }}
       </a>
       {% else %}
@@ -148,12 +148,12 @@
   <!-- Quick search links -->
   <div class="flex flex-wrap gap-2 mb-5">
     <a href="https://mountaincrestgardens.com/search/?q={{ product.title|urlencode }}"
-       target="_blank"
+       target="_blank" rel="noopener noreferrer"
        class="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 border border-brand-300 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg transition-colors">
       🔍 Search MCG for "{{ product.title }}"
     </a>
     <a href="https://bloomscape.com/search/{{ product.title|urlencode }}"
-       target="_blank"
+       target="_blank" rel="noopener noreferrer"
        class="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 border border-brand-300 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg transition-colors">
       🔍 Search Bloomscape for "{{ product.title }}"
     </a>

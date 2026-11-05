@@ -1,48 +1,87 @@
 import csv
 import io
+import math
 import os
-import threading
-import uuid
 from datetime import datetime
 from flask import (Blueprint, render_template, jsonify, current_app,
                    redirect, url_for, make_response, request, session)
 from .database import get_db, execute_db, _connect
-from .scraper import run_collection, sync_sb_products
+from .scraper import run_collection, sync_sb_products, COMPETITORS, allowed_hosts_for
 from .matcher import run_matching, _progress as _match_progress
+from .net import check_url_syntax, UnsafeURLError
+from .security import (start_session, end_session, attempt_login, safe_next,
+                       json_error, csv_text)
+from .tasks import start_task, get_status, TASK_ID_RE, PublicTaskError
 
 bp = Blueprint('main', __name__)
 
-# In-memory task tracker for background jobs
-_tasks: dict = {}
+POSITIONS = ('below_market', 'above_market', 'near_market')
+# Competitors offered in the "Add Price Manually" form
+MANUAL_SOURCES = ('mountain_crest', 'bloomscape')
+MAX_LIST_ITEMS = 500
+MAX_PRICE = 100_000.0
 
 
-def _run_in_background(task_id: str, fn, *args):
-    """Run fn(*args) in a background thread, storing result in _tasks."""
-    app = current_app._get_current_object()
+def _position_arg():
+    """Validated ?position= filter, or None for 'all'."""
+    p = request.args.get('position')
+    return p if p in POSITIONS else None
 
-    def worker():
-        with app.app_context():
-            try:
-                print(f"[task {task_id}] starting {fn.__name__}", flush=True)
-                db = _connect()
-                print(f"[task {task_id}] DB connected", flush=True)
-                result = fn(db, *args)
-                db.commit()
-                db.close()
-                print(f"[task {task_id}] done: {result}", flush=True)
-                _tasks[task_id] = {'status': 'done', 'result': result}
-            except Exception as e:
-                import traceback
-                print(f"[task {task_id}] ERROR: {e}\n{traceback.format_exc()}", flush=True)
-                _tasks[task_id] = {'status': 'error', 'error': str(e)}
 
-    _tasks[task_id] = {'status': 'running'}
-    threading.Thread(target=worker, daemon=True).start()
+def _source_list(value, field):
+    """None (= all) or a de-duplicated list of known competitor keys."""
+    if value is None or value == []:
+        return None
+    if not isinstance(value, list) or len(value) > len(COMPETITORS):
+        raise ValueError(f'{field} must be a list of competitor keys')
+    out = []
+    for v in value:
+        if not isinstance(v, str) or v not in COMPETITORS:
+            raise ValueError(f'unknown competitor in {field}')
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def _string_list(value, field, max_len=200):
+    if value is None or value == []:
+        return None
+    if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS:
+        raise ValueError(f'{field} must be a list')
+    out = []
+    for v in value:
+        if not isinstance(v, str) or not v.strip() or len(v) > max_len:
+            raise ValueError(f'invalid value in {field}')
+        out.append(v)
+    return out
+
+
+def _json_body():
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError('JSON object expected')
+    return data
+
+
+def _start(kind, fn, *args, params=None):
+    try:
+        task_id, started = start_task(current_app._get_current_object(), kind, fn, *args, params=params)
+    except PublicTaskError as e:
+        return json_error(str(e), 409)
+    body = {'success': True, 'task_id': task_id}
+    if not started:
+        body['already_running'] = True
+    return jsonify(body)
 
 
 @bp.route('/task-status/<task_id>')
 def task_status(task_id):
-    return jsonify(_tasks.get(task_id, {'status': 'unknown'}))
+    status = get_status(task_id, get_db())
+    if status is None:
+        return json_error('invalid task id', 400)
+    return jsonify(status)
 
 
 @bp.route('/robots.txt')
@@ -53,19 +92,21 @@ def robots():
 
 @bp.route('/login', methods=['GET', 'POST'])
 def login():
+    next_url = safe_next(request.values.get('next'))
     if request.method == 'POST':
-        password = request.form.get('password', '')
-        app_password = os.environ.get('APP_PASSWORD', 'succulents2026')
-        if password == app_password:
-            session['authenticated'] = True
-            return redirect(url_for('main.dashboard'))
-        return render_template('login.html', error=True)
-    return render_template('login.html', error=False)
+        outcome = attempt_login(request.form.get('password', ''))
+        if outcome == 'throttled':
+            return render_template('login.html', error='throttled', next_url=next_url), 429
+        if outcome == 'ok':
+            start_session()
+            return redirect(next_url or url_for('main.dashboard'))
+        return render_template('login.html', error='invalid', next_url=next_url), 401
+    return render_template('login.html', error=None, next_url=next_url)
 
 
-@bp.route('/logout')
+@bp.route('/logout', methods=['POST'])
 def logout():
-    session.clear()
+    end_session()
     return redirect(url_for('main.login'))
 
 
@@ -181,7 +222,7 @@ def dashboard():
 @bp.route('/products')
 def products():
     db = get_db()
-    position = request.args.get('position')  # e.g. below_market, above_market, near_market
+    position = _position_arg()  # below_market, above_market, near_market or None
 
     # Position rule: if ANY competitor is cheaper (min diff < -10%) → SB Pricier.
     # Only "SB Cheaper" if every competitor with data charges more (min diff > 10%).
@@ -305,20 +346,52 @@ def product_detail(product_id):
 @bp.route('/products/<int:product_id>/manual-match', methods=['POST'])
 def manual_match(product_id):
     import re as _re
-    data = request.get_json(silent=True) or {}
-    source = data.get('source', '').strip()
-    comp_title = data.get('title', '').strip()
-    variant_title = data.get('variant_title', '').strip() or 'Default'
     try:
-        price = float(data.get('price', 0))
+        data = _json_body()
+    except ValueError:
+        return json_error('Invalid request', 400)
+
+    def _str(key, max_len):
+        v = data.get(key, '')
+        if v is None:
+            v = ''
+        if not isinstance(v, str):
+            raise ValueError(key)
+        v = v.strip()
+        if len(v) > max_len or any(ord(c) < 32 for c in v):
+            raise ValueError(key)
+        return v
+
+    try:
+        source = _str('source', 64)
+        comp_title = _str('title', 300)
+        variant_title = _str('variant_title', 120) or 'Default'
+        url = _str('url', 2048) or None
+    except ValueError as e:
+        return json_error(f'Invalid {e.args[0]}', 400)
+    raw_price = data.get('price', 0)
+    if isinstance(raw_price, bool):
+        raw_price = 0
+    try:
+        price = float(raw_price)
     except (ValueError, TypeError):
         price = 0.0
-    url = data.get('url', '').strip() or None
 
-    if not source or not comp_title or price <= 0:
+    if not source or not comp_title or not math.isfinite(price) or price <= 0:
         return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+    if source not in MANUAL_SOURCES:
+        return json_error('Unsupported competitor for manual entry', 400)
+    if price > MAX_PRICE:
+        return json_error('Price is out of range', 400)
+    if url:
+        try:
+            url = check_url_syntax(url, allowed_hosts_for(source))
+        except UnsafeURLError:
+            return json_error("URL must be an https link on the selected competitor's site", 400)
 
     db = get_db()
+    if not db.execute('SELECT 1 FROM sb_products WHERE id=%s', (product_id,)).fetchone():
+        return json_error('Product not found', 404)
     now = datetime.utcnow().isoformat()
 
     # Stable external_id so re-entering same product doesn't duplicate
@@ -389,22 +462,25 @@ def manual_match(product_id):
                     'price_diff_pct': round(price_diff_pct, 1) if price_diff_pct is not None else None})
 
 
-@bp.route('/matches/<int:match_id>/accept', methods=['POST'])
-def accept_match(match_id):
+def _set_match_status(match_id, status):
     db = get_db()
-    db.execute("UPDATE matches SET status='accepted', reviewed_at=%s WHERE id=%s",
-               (datetime.utcnow().isoformat(), match_id))
+    cur = db.execute("UPDATE matches SET status=%s, reviewed_at=%s WHERE id=%s",
+                     (status, datetime.utcnow().isoformat(), match_id))
+    if cur._cur.rowcount == 0:
+        db.rollback()
+        return json_error('Match not found', 404)
     db.commit()
     return jsonify({'success': True})
+
+
+@bp.route('/matches/<int:match_id>/accept', methods=['POST'])
+def accept_match(match_id):
+    return _set_match_status(match_id, 'accepted')
 
 
 @bp.route('/matches/<int:match_id>/reject', methods=['POST'])
 def reject_match(match_id):
-    db = get_db()
-    db.execute("UPDATE matches SET status='rejected', reviewed_at=%s WHERE id=%s",
-               (datetime.utcnow().isoformat(), match_id))
-    db.commit()
-    return jsonify({'success': True})
+    return _set_match_status(match_id, 'rejected')
 
 
 @bp.route('/review')
@@ -429,7 +505,7 @@ def review_queue():
 @bp.route('/export.csv')
 def export_csv():
     db = get_db()
-    position = request.args.get('position')
+    position = _position_arg()
     where = "WHERE m.status = 'accepted'"
     params = []
     if position:
@@ -459,36 +535,39 @@ def export_csv():
                      'Competitor', 'Competitor Product', 'URL',
                      'Comp Variant', 'Comp Price', 'Price Diff %',
                      'Relationship', 'Confidence', 'Market Position', 'Status', 'Matched At'])
+    # Text cells come from scraped/manual data: neutralise spreadsheet formulas.
+    # Prices and percentages are formatted by us from numbers and stay as-is.
     for row in rows:
         writer.writerow([
-            row[0], row[1], f'${row[2]:.2f}' if row[2] else '',
+            csv_text(row[0]), csv_text(row[1]), f'${row[2]:.2f}' if row[2] else '',
             f'${row[3]:.2f}' if row[3] else '',
-            row[4], row[5], row[6], row[7],
+            csv_text(row[4]), csv_text(row[5]), csv_text(row[6]), csv_text(row[7]),
             f'${row[8]:.2f}' if row[8] else '',
             f'{row[9]:+.1f}%' if row[9] is not None else '',
-            row[10], row[11], row[12], row[13], row[14]
+            csv_text(row[10]), row[11], csv_text(row[12]), csv_text(row[13]), csv_text(row[14])
         ])
 
     filename = f'sb_pricier.csv' if position == 'below_market' else \
                f'sb_cheaper.csv' if position == 'above_market' else \
                f'near_market.csv' if position == 'near_market' else 'price_comparison.csv'
     response = make_response(output.getvalue())
-    response.headers['Content-Type'] = 'text/csv'
-    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response
 
 
 @bp.route('/sync-sb', methods=['POST'])
 def sync_sb():
-    task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, sync_sb_products)
-    return jsonify({'success': True, 'task_id': task_id})
+    return _start('sync', sync_sb_products)
 
 
 @bp.route('/collect', methods=['POST'])
 def collect():
-    data = request.get_json(silent=True) or {}
-    sources = data.get('sources') or None  # None = all competitors
+    try:
+        data = _json_body()
+        sources = _source_list(data.get('sources'), 'sources')  # None = all competitors
+    except ValueError as e:
+        return json_error(str(e), 400)
 
     def _run(db, src):
         result = run_collection(db, sources=src)
@@ -531,34 +610,32 @@ def collect():
         result['prices_refreshed'] = updated
         return result
 
-    task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run, sources)
-    return jsonify({'success': True, 'task_id': task_id})
+    return _start('collect', _run, sources, params={'sources': sources})
 
 
 @bp.route('/collect/<source>', methods=['POST'])
 def collect_source(source):
     """Run collection for a single competitor source."""
-    from .scraper import COMPETITORS
     if source not in COMPETITORS:
-        return jsonify({'success': False, 'error': f'Unknown source: {source}'}), 400
+        return json_error('Unknown source', 400)
 
     def _run_one(db, src):
         from .scraper import run_collection_one
         return run_collection_one(db, src)
 
-    task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run_one, source)
-    return jsonify({'success': True, 'task_id': task_id})
+    return _start('collect', _run_one, source, params={'sources': [source]})
 
 
 @bp.route('/trigger-mcg', methods=['POST'])
 def trigger_mcg():
     db = get_db()
+    # Serialise check-then-insert across requests/workers (lock released at commit)
+    db.execute("SELECT pg_advisory_xact_lock(hashtext('scrape_queue:mountain_crest'))")
     existing = db.execute(
         "SELECT id, status FROM scrape_queue WHERE source='mountain_crest' AND status IN ('pending','running') LIMIT 1"
     ).fetchone()
     if existing:
+        db.rollback()
         return jsonify({'success': False, 'error': f'Already {existing[1]} — check your Terminal'})
     now = datetime.utcnow().isoformat()
     db.execute(
@@ -591,6 +668,8 @@ def assortment_gaps():
     }
     data = run_assortment_gaps(get_db())
     only = request.args.get('source')
+    if only not in source_labels:
+        only = None
     return render_template('assortment_gaps.html',
                            gaps=data['gaps'], totals=data['totals'],
                            source_labels=source_labels, only=only)
@@ -739,6 +818,8 @@ def size_gaps():
 
 @bp.route('/match-progress/<task_id>')
 def match_progress(task_id):
+    if not TASK_ID_RE.match(task_id):
+        return json_error('invalid task id', 400)
     p = _match_progress.get(task_id)
     if not p:
         return jsonify({'done': 0, 'total': 0, 'pct': 0})
@@ -748,14 +829,17 @@ def match_progress(task_id):
 
 @bp.route('/match', methods=['POST'])
 def run_match():
-    data = request.get_json(silent=True) or {}
-    plant_types = data.get('plant_types') or None  # None = all types
-    sources = data.get('sources') or None           # None = all competitors
+    try:
+        data = _json_body()
+        plant_types = _string_list(data.get('plant_types'), 'plant_types')  # None = all types
+        sources = _source_list(data.get('sources'), 'sources')              # None = all competitors
+    except ValueError as e:
+        return json_error(str(e), 400)
     clear_pending = data.get('clear_pending', False)
+    if not isinstance(clear_pending, bool):
+        return json_error('clear_pending must be true or false', 400)
 
-    task_id = uuid.uuid4().hex[:8]
-
-    def _run(db, pt, src, do_clear):
+    def _run(db, pt, src, do_clear, task_id):
         deleted = 0
         if do_clear:
             cur = db.cursor()
@@ -773,8 +857,24 @@ def run_match():
             result['deleted'] = deleted
         return result
 
-    _run_in_background(task_id, _run, plant_types, sources, clear_pending)
-    return jsonify({'success': True, 'task_id': task_id})
+    # The task id is needed inside the job for progress reporting
+    holder = {}
+
+    def _run_with_id(db, pt, src, do_clear):
+        return _run(db, pt, src, do_clear, holder['id'])
+
+    try:
+        task_id, started = start_task(current_app._get_current_object(), 'match', _run_with_id,
+                                      plant_types, sources, clear_pending,
+                                      params={'plant_types': plant_types, 'sources': sources,
+                                              'clear_pending': clear_pending},
+                                      before_start=lambda tid: holder.__setitem__('id', tid))
+    except PublicTaskError as e:
+        return json_error(str(e), 409)
+    body = {'success': True, 'task_id': task_id}
+    if not started:
+        body['already_running'] = True
+    return jsonify(body)
 
 
 @bp.route('/refresh-prices', methods=['POST'])
@@ -827,6 +927,4 @@ def refresh_prices():
         print(f'[refresh] {msg}', flush=True)
         return msg
 
-    task_id = uuid.uuid4().hex[:8]
-    _run_in_background(task_id, _run)
-    return jsonify({'success': True, 'task_id': task_id})
+    return _start('refresh', _run)
